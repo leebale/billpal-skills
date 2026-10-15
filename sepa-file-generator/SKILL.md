@@ -3,8 +3,8 @@ name: sepa-file-generator
 description: >
   Build one ISO pain.001.001.09 SEPA credit-transfer file (SEPA-Datei,
   Sammelüberweisung) for upload to business online banking. The generator
-  needs an assistant that can run Node. Claude can. ChatGPT often cannot,
-  and the user should see that before the skill stops. The model does not
+  runs with Node and needs this skill's files in the code sandbox. With
+  only a link, ask the user to upload the skill ZIP. The model does not
   write the XML itself.
 ---
 
@@ -14,7 +14,17 @@ Build one ISO `pain.001.001.09` file. Answer in the user's language.
 
 Do not ask the user to pick a dialect. Business banks in Austria and Germany that import a SEPA XML file take this standard. If the user says their bank has no XML import (N26 and Wise do not), say that and stop. Do not build a per-bank CSV.
 
-The generator needs Node. Claude can run it. ChatGPT often cannot. If `node` cannot run, stop. Say that no file was made, and why. Do not write the XML by hand. Do not talk about a file that was not schema-checked. There is no file.
+## Get the files first
+
+The generator is `generate.mjs` with its `vendor/` and `schema/` folders. It runs with Node and needs no internet. Before anything else, check that these files are in your code sandbox.
+
+If you only have a link to this skill, the sandbox usually cannot download them, and the schema checker is a binary file you cannot copy as text. Do not try. Tell the user, in one step:
+
+> Download https://github.com/leebale/billpal-skills/releases/latest/download/sepa-file-generator.zip and drop the ZIP into this chat.
+
+Then unzip it and continue from the folder that holds `generate.mjs`.
+
+If `node` cannot run even with the files, stop. Say that no file was made, and why. Do not write the XML by hand. Do not talk about a file that was not schema-checked. There is no file.
 
 A rejected bank import never executes a payment. After you hand the file over, say that if the bank rejects it, the user pastes the bank's error message here. You fix the input and run `generate.mjs` again.
 
