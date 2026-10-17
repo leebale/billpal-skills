@@ -1,10 +1,11 @@
 ---
 name: invoice-generator
 description: >
-  Write a normal invoice as a PDF or an editable file. Use when the user
-  wants to create an invoice, write an invoice, or says "Rechnung schreiben"
-  or "Rechnung erstellen". Fills a Billpal template, the user's own file, or
-  a plain default.
+  Write an invoice as a PDF or an editable file, optionally as a ZUGFeRD /
+  Factur-X e-invoice. Use when the user wants to create an invoice, write an
+  invoice, make an e-invoice, or says "Rechnung schreiben", "Rechnung
+  erstellen", or "E-Rechnung". Fills a Billpal template, the user's own file,
+  or a plain default.
 ---
 
 # Invoice generator
@@ -33,16 +34,18 @@ Also ask, unless the card already has them and the user confirms they still appl
 
 Show the invoice and wait. Do not send it, and do not invent a VAT id, an IBAN, a tax rate, or an invoice number.
 
-## Fields a usable AT or DE invoice has
+## Fields a usable invoice has
 
-Austria: § 11 UStG. Germany: § 14 UStG. Collect these before writing the file.
+In the EU, these come from the VAT Directive (Art. 226) and the national VAT law, for example § 11 UStG in Austria and § 14 UStG in Germany. Collect these before writing the file.
 
 - A sequential invoice number, the issue date, and the service date or service period.
 - Name and address of the seller and of the buyer.
-- The seller's VAT id, or in Germany the Steuernummer. A Kleinunternehmer may have no VAT id. Say which case it is. Do not leave the field blank without that reason.
-- The buyer's VAT id when the regime requires it: an Austrian B2B invoice over €10,000 gross, and always for reverse charge or an intra-EU supply.
+- The seller's VAT id, or the national tax number (Steuernummer in Germany). A small business under the exemption (Kleinunternehmer) may have no VAT id. Say which case it is. Do not leave the field blank without that reason.
+- The buyer's VAT id when the regime requires it: always for reverse charge or an intra-EU supply, and in Austria on a B2B invoice over €10,000 gross.
 - Quantity and a description of each item or service.
-- Net amount per tax rate, the tax rate, and the tax amount. Or the exemption wording (Kleinunternehmer, reverse charge, intra-community supply). Then the gross total.
+- Net amount per tax rate, the tax rate, and the tax amount. Or the exemption wording (small-business exemption, reverse charge, intra-community supply). Then the gross total.
+
+Outside the EU, ask the user what their country requires and write that. Do not claim the invoice meets a law you were not told about.
 
 ## Where the layout comes from
 
@@ -108,11 +111,17 @@ Confirm every value before it lands on the invoice.
 - Seller: `company_name`, `tax_id`, and `website` only, from a party with `is_your_company` on `get_document`. Address and logo are not on the connection. `list_workspaces` returns id, name, and role only. Ask the user for the address and the logo.
 - Next number: search outgoing invoices and show the last few. Results are not sorted by number. Ask which number to use. After each invoice, update the last number on the company card.
 
+## E-invoice (optional)
+
+The invoice is complete without this step. Offer it once, in one sentence, when the buyer is a business in Germany, where e-invoices are increasingly expected. Do it when the user asks for ZUGFeRD, Factur-X, or an e-invoice. If they say no, do not ask again.
+
+For the e-invoice, read `e-invoice.md` in this skill folder and follow it. It needs the finished invoice PDF, code execution, and a seller in an EU country.
+
 ## Before you deliver
 
 The invoice is not done until all of these are true:
 
 - Regime, language, number format, date format, and currency were asked, not guessed.
-- Every field in the AT/DE list is present, or the exemption wording replaces the tax lines.
+- Every field in the list above is present, or the exemption wording replaces the tax lines.
 - No denylist entry remains, aside from a legal name the user confirmed is theirs.
 - The user has seen the invoice and has not yet been told it was sent.

@@ -2,4 +2,5 @@ Third-party files keep their own license. The MIT license in LICENSE applies to 
 
 - sepa.js is MPL-2.0. The dist bundle and its license file are vendored under sepa-file-generator/vendor/. It is not an application dependency.
 - xmllint-wasm is MIT. The checker files, including the wasm, are vendored under sepa-file-generator/vendor/xmllint/. Runtime does not install packages.
+- pypdf is BSD-3-Clause. It is vendored with its license under invoice-generator/vendor/pypdf/. Runtime does not install packages.
 - The ISO 20022 pain.001.001.09 schema is bundled under sepa-file-generator/schema/. This folder is not the official site. The only current source is https://www.iso20022.org/. Confirm those terms again before the SEPA skill is published.
