@@ -30,8 +30,13 @@
   .kpi { border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; }
   .kpi b { display: block; font-size: 20px; margin-top: 2px; }
   .kpi span { color: var(--muted); font-size: 12px; }
+  details { border-bottom: 1px solid var(--line); }
+  details details { margin-left: 16px; border-bottom: 0; }
+  summary { cursor: pointer; display: flex; justify-content: space-between; gap: 12px; padding: 6px 8px; }
+  summary b { font-weight: 600; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  summary span.muted { color: var(--muted); font-weight: 400; }
   footer { margin-top: 48px; color: var(--muted); font-size: 12px; }
-  @media print { nav { display: none; } h2 { break-before: auto; } th { position: static; } main { padding: 0; } }
+  @media print { nav { display: none; } details > * { display: block; } h2 { break-before: auto; } th { position: static; } main { padding: 0; } }
 </style>
 </head>
 <body>
@@ -56,7 +61,11 @@
     receivable: "Forderung", payableSide: "Verbindlichkeit", cost: "Anschaffung", prior: "AfA bisher", thisYear: "AfA dieses Jahr",
     booked: "gebucht", bookValue: "Buchwert Ende", none: "Keine Einträge", booking: "Buchung", notFiling: "Zusammenfassung, keine Steuererklärung.",
     source: "Erstellt aus", resultYear: "Ergebnis des Geschäftsjahres", taxes: "Steuern", taxType: "Steuer",
-    taxGeneric: "Steuer", types: { vat: "USt", gst: "GST", sales_tax: "Sales Tax", other: "Andere" }
+    taxGeneric: "Steuer", types: { vat: "USt", gst: "GST", sales_tax: "Sales Tax", other: "Andere" },
+    drill: "Konten im Detail", bookings: "Buchungen", text: "Text", document: "Beleg", byParty: "Nach Partner",
+    firstBookings: "Einzelne Buchungen", firstOf: "die ersten 50 von",
+    regimes: { standard: "Normal", reverse_charge: "Reverse Charge", intra_community: "Innergemeinschaftlich",
+      exempt: "Steuerfrei", zero: "Nullsatz", export: "Ausfuhr", out_of_scope: "Nicht steuerbar", import: "Einfuhr" }
   } : {
     title: "Books", period: "Period", ready: "Ready for your accountant", notReady: "Not ready yet",
     reconciled: "Totals reconcile", notReconciled: "Totals do not reconcile", pnl: "Profit and loss",
@@ -70,7 +79,11 @@
     receivable: "Receivable", payableSide: "Payable", cost: "Cost", prior: "Depreciated before", thisYear: "This year",
     booked: "booked", bookValue: "Book value at end", none: "Nothing here", booking: "Booking", notFiling: "A summary, not a filing.",
     source: "Built from", resultYear: "Result for the fiscal year", taxes: "Taxes", taxType: "Tax",
-    taxGeneric: "Tax collected", types: { vat: "VAT", gst: "GST", sales_tax: "Sales tax", other: "Other" }
+    taxGeneric: "Tax collected", types: { vat: "VAT", gst: "GST", sales_tax: "Sales tax", other: "Other" },
+    drill: "Accounts in detail", bookings: "bookings", text: "Description", document: "Document", byParty: "By party",
+    firstBookings: "Single bookings", firstOf: "the first 50 of",
+    regimes: { standard: "Standard", reverse_charge: "Reverse charge", intra_community: "Intra-EU", exempt: "Exempt",
+      zero: "Zero-rated", export: "Export", out_of_scope: "Out of scope", import: "Import" }
   };
   var locale = de ? (m.country === "AT" ? "de-AT" : "de-DE") : "en-GB";
   var digits = typeof m.precision === "number" ? m.precision : 2;
@@ -99,8 +112,11 @@
     t.appendChild(tb); wrap.appendChild(t); return wrap;
   }
   function section(id, title) {
-    var s = el("section", { id: id }); s.appendChild(el("h2", null, title)); app.appendChild(s); return s;
+    var s = el("section", { id: id }); s.appendChild(el("h2", null, title)); app.appendChild(s);
+    nav.appendChild(el("a", { href: "#" + id }, title));
+    return s;
   }
+  function plain(line) { return String(line).replace(/^[a-z_]+: /, ""); }
   function sum(rows, f) { return rows.reduce(function (a, r) { return a + Number(f(r) || 0); }, 0); }
 
   var app = document.getElementById("app");
@@ -111,23 +127,19 @@
   var badges = el("div", { class: "badges" });
   badges.appendChild(el("span", { class: "badge " + (m.ready ? "good" : "bad") }, m.ready ? L.ready : L.notReady));
   badges.appendChild(el("span", { class: "badge " + (m.reconciled ? "good" : "bad") }, m.reconciled ? L.reconciled : L.notReconciled));
-  if (data.missing_receipts.length) badges.appendChild(el("span", { class: "badge warn" }, L.missing + ": " + data.missing_receipts.length));
+  if (m.missing_receipts_count) badges.appendChild(el("span", { class: "badge warn" }, L.missing + ": " + m.missing_receipts_count));
   app.appendChild(badges);
   if (m.fails && m.fails.length) {
     var ul = el("ul", { class: "fails" });
-    m.fails.forEach(function (f) { ul.appendChild(el("li", null, f)); });
+    m.fails.forEach(function (f) { ul.appendChild(el("li", null, plain(f))); });
     app.appendChild(ul);
   }
   if (m.warnings && m.warnings.length) {
     var wl = el("ul", { class: "warns" });
-    m.warnings.forEach(function (w) { wl.appendChild(el("li", null, w)); });
+    m.warnings.forEach(function (w) { wl.appendChild(el("li", null, plain(w))); });
     app.appendChild(wl);
   }
   var nav = el("nav");
-  [["pnl", cash ? L.pnlCash : L.pnl], ["bs", cash ? L.bsCash : L.bs], ["vat", vatTitle], ["items", L.items],
-   ["assets", L.assets], ["missing", L.missing], ["tb", L.tb]].forEach(function (n) {
-    nav.appendChild(el("a", { href: "#" + n[0] }, n[1]));
-  });
   app.appendChild(nav);
 
   var income = data.pnl.filter(function (r) { return r.group === "Income"; });
@@ -154,6 +166,37 @@
     s.appendChild(table(head, rows, numeric, tot));
   });
 
+  if (data.pnl.length) {
+    // One row per booking under each account, with only that account's postings: the bank leg never adds in.
+    s = section("drill", L.drill);
+    var byAcct = {};
+    data.journal.forEach(function (j) { (byAcct[j.account] = byAcct[j.account] || []).push(j); });
+    data.pnl.forEach(function (r) {
+      var sign = r.group === "Income" ? -1 : 1, payees = {}, total = 0;
+      (byAcct[r.account] || []).forEach(function (j) {
+        var p = payees[j.payee] = payees[j.payee] || { name: j.payee, total: 0, txns: {}, order: [] };
+        var key = j.txn_id || j.date + "|" + j.narration;
+        if (!p.txns[key]) { p.txns[key] = { date: j.date, text: j.narration, document: j.document, amount: 0 }; p.order.push(key); }
+        p.txns[key].amount += sign * Number(j.amount); p.total += sign * Number(j.amount); total += sign * Number(j.amount);
+      });
+      var acct = el("details"), head = el("summary");
+      head.appendChild(el("span", null, [r.code, r.name].filter(Boolean).join(" "))); head.appendChild(el("b", null, num(total)));
+      acct.appendChild(head);
+      Object.keys(payees).map(function (k) { return payees[k]; })
+        .sort(function (a, b) { return Math.abs(b.total) - Math.abs(a.total); })
+        .forEach(function (p) {
+          var d = el("details"), sm = el("summary"), label = el("span", null, p.name || "?");
+          label.appendChild(el("span", { class: "muted" }, " · " + p.order.length + " " + L.bookings));
+          sm.appendChild(label); sm.appendChild(el("b", null, num(p.total))); d.appendChild(sm);
+          d.appendChild(table([L.date, L.text, L.document, L.amount], p.order.map(function (k) {
+            var t = p.txns[k]; return [t.date, t.text, t.document, t.amount];
+          }), [false, false, false, true]));
+          acct.appendChild(d);
+        });
+      s.appendChild(acct);
+    });
+  }
+
   s = section("bs", cash ? L.bsCash : L.bs);
   var bs = data.balance_sheet;
   [[L.assetsSide, bs.assets, bs.assets_total], [L.liabilities, bs.liabilities, bs.liabilities_total],
@@ -164,34 +207,48 @@
   });
   s.appendChild(el("p", null, L.resultYear + ": " + num(bs.result)));
 
-  s = section("vat", vatTitle);
-  s.appendChild(el("p", { class: "sub" }, L.notFiling));
   function typeName(t) { return L.types[t] || t; }
-  s.appendChild(table([L.period, L.taxType, L.direction, L.regime, L.rate, L.base, vatOnly ? L.tax : L.taxGeneric, L.inputTax],
-    data.vat.lines.map(function (r) { return [r.period, typeName(r.type), r.direction === "sale" ? L.sale : L.purchase, r.regime, r.rate + " %", r.base, r.tax, r.input_tax]; }),
-    [false, false, false, false, false, true, true, true]));
-  s.appendChild(el("h3", null, L.payable));
-  s.appendChild(table([L.period, L.taxType, vatOnly ? L.tax : L.taxGeneric, L.inputTax, L.payable],
-    data.vat.totals.map(function (r) { return [r.period, typeName(r.type), r.tax, r.input_tax, r.payable]; }), [false, false, true, true, true]));
-  if (data.vat.codes.length) {
-    s.appendChild(el("h3", null, L.codes));
-    s.appendChild(table([L.period, L.code, L.amount], data.vat.codes.map(function (r) { return [r.period, r.code, r.amount]; }),
-      [false, false, true]));
+  if (data.vat.lines.length || data.vat.totals.length) {
+    s = section("vat", vatTitle);
+    s.appendChild(el("p", { class: "sub" }, L.notFiling));
+    s.appendChild(table([L.period, L.taxType, L.direction, L.regime, L.rate, L.base, vatOnly ? L.tax : L.taxGeneric, L.inputTax],
+      data.vat.lines.map(function (r) { return [r.period, typeName(r.type), r.direction === "sale" ? L.sale : L.purchase, L.regimes[r.regime] || r.regime, r.rate + " %", r.base, r.tax, r.input_tax]; }),
+      [false, false, false, false, false, true, true, true]));
+    s.appendChild(el("h3", null, L.payable));
+    s.appendChild(table([L.period, L.taxType, vatOnly ? L.tax : L.taxGeneric, L.inputTax, L.payable],
+      data.vat.totals.map(function (r) { return [r.period, typeName(r.type), r.tax, r.input_tax, r.payable]; }), [false, false, true, true, true]));
+    if (data.vat.codes.length) {
+      s.appendChild(el("h3", null, L.codes));
+      s.appendChild(table([L.period, L.code, L.amount], data.vat.codes.map(function (r) { return [r.period, r.code, r.amount]; }),
+        [false, false, true]));
+    }
   }
 
-  s = section("items", L.items);
-  s.appendChild(table([L.party, L.number, L.date, L.due, L.amount, L.open, L.overdue, ""],
-    data.open_items.map(function (r) {
-      return [r.party, r.number, r.date, r.due, r.amount, r.open, String(r.days_overdue), r.side === "receivable" ? L.receivable : L.payableSide];
-    }), [false, false, false, false, true, true, false, false]));
+  if (data.open_items.length) {
+    s = section("items", L.items);
+    s.appendChild(table([L.party, L.number, L.date, L.due, L.amount, L.open, L.overdue, ""],
+      data.open_items.map(function (r) {
+        return [r.party, r.number, r.date, r.due, r.amount, r.open, String(r.days_overdue), r.side === "receivable" ? L.receivable : L.payableSide];
+      }), [false, false, false, false, true, true, false, false]));
+  }
 
-  s = section("assets", L.assets);
-  s.appendChild(table([L.name, L.cost, L.prior, L.thisYear, L.booked, L.bookValue],
-    data.assets.map(function (r) { return [r.description || r.asset, r.cost, r.prior, r.due, r.booked, r.book_value_end]; }),
-    [false, true, true, true, true, true]));
+  if (data.assets.length) {
+    s = section("assets", L.assets);
+    s.appendChild(table([L.name, L.cost, L.prior, L.thisYear, L.booked, L.bookValue],
+      data.assets.map(function (r) { return [r.description || r.asset, r.cost, r.prior, r.due, r.booked, r.book_value_end]; }),
+      [false, true, true, true, true, true]));
+  }
 
-  s = section("missing", L.missing);
-  s.appendChild(table([L.booking], data.missing_receipts.map(function (r) { return [r]; }), [false]));
+  if (m.missing_receipts_count) {
+    s = section("missing", L.missing);
+    s.appendChild(el("h3", null, L.byParty));
+    s.appendChild(table([L.party, L.bookings, L.amount], data.missing_receipts_by_party.map(function (r) {
+      return [r.payee, String(r.count), r.amount];
+    }), [false, true, true]));
+    s.appendChild(el("h3", null, L.firstBookings + (m.missing_receipts_count > data.missing_receipts.length
+      ? " (" + L.firstOf + " " + m.missing_receipts_count + ")" : "")));
+    s.appendChild(table([L.booking], data.missing_receipts.map(function (r) { return [r]; }), [false]));
+  }
 
   s = section("tb", L.tb);
   s.appendChild(table([L.code, L.name, L.opening, L.debit, L.credit, L.closing],

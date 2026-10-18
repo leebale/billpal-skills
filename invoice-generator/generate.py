@@ -86,8 +86,10 @@ def build_xml(data: dict, check_totals: bool = True) -> str:
     if category not in {"S", "E", "AE", "K"}:
         fail("tax_category must be S, E, AE, or K")
     rate = data.get("tax_rate_percent")
-    if isinstance(rate, bool) or not isinstance(rate, (int, float)):
+    if rate is None:
         fail("tax_rate_percent is required")
+    if isinstance(rate, bool) or not isinstance(rate, (int, float)):
+        fail("tax_rate_percent must be a number like 20, not text like \"20\"")
     if category == "S":
         if rate <= 0:
             fail("category S needs a tax rate above 0")
@@ -167,7 +169,31 @@ def build_xml(data: dict, check_totals: bool = True) -> str:
     currency = require_str(data, "currency")
     issued = date_102(require_str(data, "issue_date"), "issue_date")
     delivery_date = optional_str(data, "delivery_date")
-    delivery = date_102(delivery_date, "delivery_date") if delivery_date else issued
+    period_start = optional_str(data, "period_start")
+    period_end = optional_str(data, "period_end")
+    period_xml = ""
+    if period_start or period_end:
+        if not (period_start and period_end):
+            fail("period_start and period_end go together")
+        start = date_102(period_start, "period_start")
+        end = date_102(period_end, "period_end")
+        if end < start:
+            fail("period_end must not be before period_start")
+        period_xml = (
+            "<ram:BillingSpecifiedPeriod>"
+            f"<ram:StartDateTime><udt:DateTimeString format=\"102\">{start}</udt:DateTimeString></ram:StartDateTime>"
+            f"<ram:EndDateTime><udt:DateTimeString format=\"102\">{end}</udt:DateTimeString></ram:EndDateTime>"
+            "</ram:BillingSpecifiedPeriod>"
+        )
+    delivery_xml = ""
+    # Without a delivery date or a period, the issue date stands in as the delivery date.
+    if delivery_date or not period_xml:
+        delivery = date_102(delivery_date, "delivery_date") if delivery_date else issued
+        delivery_xml = (
+            "<ram:ActualDeliverySupplyChainEvent>"
+            f"<ram:OccurrenceDateTime><udt:DateTimeString format=\"102\">{delivery}</udt:DateTimeString></ram:OccurrenceDateTime>"
+            "</ram:ActualDeliverySupplyChainEvent>"
+        )
     due_date = optional_str(data, "due_date")
     payment_terms = optional_str(data, "payment_terms")
     terms_xml = ""
@@ -228,9 +254,7 @@ def build_xml(data: dict, check_totals: bool = True) -> str:
         "</ram:ApplicableHeaderTradeAgreement>"
         "<ram:ApplicableHeaderTradeDelivery>"
         f"{ship_to_xml}"
-        "<ram:ActualDeliverySupplyChainEvent>"
-        f"<ram:OccurrenceDateTime><udt:DateTimeString format=\"102\">{delivery}</udt:DateTimeString></ram:OccurrenceDateTime>"
-        "</ram:ActualDeliverySupplyChainEvent>"
+        f"{delivery_xml}"
         "</ram:ApplicableHeaderTradeDelivery>"
         "<ram:ApplicableHeaderTradeSettlement>"
         f"<ram:InvoiceCurrencyCode>{xml_text(currency)}</ram:InvoiceCurrencyCode>"
@@ -242,6 +266,7 @@ def build_xml(data: dict, check_totals: bool = True) -> str:
         f"<ram:CategoryCode>{category}</ram:CategoryCode>"
         f"<ram:RateApplicablePercent>{rate_text}</ram:RateApplicablePercent>"
         "</ram:ApplicableTradeTax>"
+        f"{period_xml}"
         f"{terms_xml}"
         "<ram:SpecifiedTradeSettlementHeaderMonetarySummation>"
         f"<ram:LineTotalAmount>{cents_text(net_cents)}</ram:LineTotalAmount>"

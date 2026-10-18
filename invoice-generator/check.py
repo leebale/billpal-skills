@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Accept good PDFs (S, E, AE, K, a French seller) and reject a bad one against the deployed checker."""
+"""Accept good PDFs (S, E, AE, K, a French seller, a service period) and reject a bad one against the deployed checker."""
 
 from __future__ import annotations
 
@@ -107,19 +107,27 @@ GOOD = {
         "grand_total_cents": 12000,
         "due_cents": 12000,
     },
+    "period": {**base(), "period_start": "2024-01-01", "period_end": "2024-01-08"},
+}
+
+REFUSED = {
+    "us": ({**base(), "seller_country": "US"}, "EU country"),
+    "text_rate": ({**base(), "tax_rate_percent": "19"}, "must be a number"),
+    "half_period": ({**base(), "period_start": "2024-01-01"}, "go together"),
+    "backwards_period": ({**base(), "period_start": "2024-01-08", "period_end": "2024-01-01"}, "before period_start"),
 }
 
 
-def refuses_non_eu_seller(folder: Path, visual: Path) -> None:
-    source = folder / "us.json"
-    source.write_text(json.dumps({**base(), "seller_country": "US"}), encoding="utf-8")
+def refuses(folder: Path, visual: Path, name: str, payload: dict, message: str) -> None:
+    source = folder / f"{name}.json"
+    source.write_text(json.dumps(payload), encoding="utf-8")
     run = subprocess.run(
-        [sys.executable, str(HERE / "generate.py"), str(source), str(visual), str(folder / "us.pdf")],
+        [sys.executable, str(HERE / "generate.py"), str(source), str(visual), str(folder / f"{name}.pdf")],
         capture_output=True,
         text=True,
     )
-    if run.returncode == 0 or "EU country" not in run.stderr:
-        print(f"expected a non-EU seller to be refused, got exit {run.returncode}: {run.stderr}", file=sys.stderr)
+    if run.returncode == 0 or message not in run.stderr:
+        print(f"{name}: expected a refusal with '{message}', got exit {run.returncode}: {run.stderr}", file=sys.stderr)
         raise SystemExit(1)
 
 
@@ -132,7 +140,8 @@ def main() -> None:
         with visual.open("wb") as handle:
             blank.write(handle)
 
-        refuses_non_eu_seller(folder, visual)
+        for name, (payload, message) in REFUSED.items():
+            refuses(folder, visual, name, payload, message)
         for name, payload in GOOD.items():
             source = folder / f"{name}.json"
             pdf = folder / f"{name}.pdf"

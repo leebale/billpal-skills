@@ -1,4 +1,4 @@
-chart,account,role,code,name_en,name_de,tax_regime,tax_rate
+chart,account,role,code,name_en,name_de,tax_regime,tax_rate,entity
 skr03,Assets:Bank:Giro,bank,1200,Bank,Bank,,
 skr03,Assets:Cash,cash,1000,Cash,Kasse,,
 skr03,Assets:Transit,clearing,1360,Money in transit,Geldtransit,,
@@ -17,8 +17,10 @@ skr03,Liabilities:VAT:Output-13b,vat_out,1787,VAT reverse charge 19 %,Umsatzsteu
 skr03,Liabilities:VAT:Output-EU,vat_out,,VAT intra-EU acquisitions,Umsatzsteuer aus innergemeinschaftlichem Erwerb,intra_community,
 skr03,Liabilities:Tax-Office,,1780,VAT prepayments,Umsatzsteuer-Vorauszahlungen,,
 skr03,Equity:Retained-Earnings,retained_earnings,0860,Retained earnings / capital,Gewinnvortrag / Kapital,,
-skr03,Equity:Private,private,1800,Private withdrawals,Privatentnahmen allgemein,,
-skr03,Equity:Private-Deposits,private,1890,Private deposits,Privateinlagen,,
+skr03,Equity:Private,private,1800,Private withdrawals,Privatentnahmen allgemein,,,owner
+skr03,Equity:Private-Deposits,private,1890,Private deposits,Privateinlagen,,,owner
+skr03,Liabilities:Shareholder,shareholder,1665,Shareholder clearing account,Verrechnungskonto Gesellschafter,,,company
+skr03,Expenses:Corporate-Tax,,2200,Corporate income tax,Körperschaftsteuer,,,company
 skr03,Equity:Opening,opening,9000,Opening balances,Saldenvorträge,,
 skr03,Income:Sales-Reduced,,8300,Sales 7 % VAT,Erlöse 7 % USt,,
 skr03,Income:Discounts-Granted,discount_granted,8730,Discounts granted,Gewährte Skonti,,
@@ -77,8 +79,10 @@ skr04,Liabilities:VAT:Output-13b,vat_out,,VAT reverse charge 19 %,Umsatzsteuer n
 skr04,Liabilities:VAT:Output-EU,vat_out,,VAT intra-EU acquisitions,Umsatzsteuer aus innergemeinschaftlichem Erwerb,intra_community,
 skr04,Liabilities:Tax-Office,,3820,VAT prepayments,Umsatzsteuer-Vorauszahlungen,,
 skr04,Equity:Retained-Earnings,retained_earnings,2970,Retained earnings / capital,Gewinnvortrag / Kapital,,
-skr04,Equity:Private,private,2100,Private withdrawals,Privatentnahmen allgemein,,
-skr04,Equity:Private-Deposits,private,2180,Private deposits,Privateinlagen,,
+skr04,Equity:Private,private,2100,Private withdrawals,Privatentnahmen allgemein,,,owner
+skr04,Equity:Private-Deposits,private,2180,Private deposits,Privateinlagen,,,owner
+skr04,Liabilities:Shareholder,shareholder,3640,Shareholder clearing account,Verrechnungskonto Gesellschafter,,,company
+skr04,Expenses:Corporate-Tax,,7600,Corporate income tax,Körperschaftsteuer,,,company
 skr04,Equity:Opening,opening,9000,Opening balances,Saldenvorträge,,
 skr04,Income:Sales-Reduced,,4300,Sales 7 % VAT,Erlöse 7 % USt,,
 skr04,Income:Discounts-Granted,discount_granted,4730,Discounts granted,Gewährte Skonti,,
@@ -129,7 +133,9 @@ oekr,Liabilities:Payables,ap,3300,Trade payables,Lieferverbindlichkeiten,,
 oekr,Liabilities:VAT:Output,vat_out,3500,Output VAT,Umsatzsteuer,,
 oekr,Liabilities:Tax-Office,,,Tax office account,Abgabenkonto Finanzamt,,
 oekr,Equity:Retained-Earnings,retained_earnings,9000,Capital,Kapital,,
-oekr,Equity:Private,private,9600,Private,Privat,,
+oekr,Equity:Private,private,9600,Private,Privat,,,owner
+oekr,Liabilities:Shareholder,shareholder,3460,Shareholder clearing account,Verrechnungskonto Gesellschafter,,,company
+oekr,Assets:Corporate-Tax-Prepaid,,,Corporate income tax prepayments,Körperschaftsteuer-Vorauszahlungen,,,company
 oekr,Equity:Opening,opening,9800,Opening balance,Eröffnungsbilanz,,
 oekr,Income:Discounts-Granted,discount_granted,,Discounts granted,Gewährte Skonti,,
 oekr,Expenses:Discounts-Received,discount_received,,Discounts received,Erhaltene Skonti,,
@@ -179,8 +185,9 @@ qbo,Assets:Uncategorized,suspense,,Uncategorized Asset,Ungeklärte Posten,,
 qbo,Liabilities:Payables,ap,,Accounts Payable (A/P),Verbindlichkeiten,,
 qbo,Liabilities:Sales-Tax-Payable,vat_out,,Sales Tax Payable,Umsatzsteuer,,
 qbo,Equity:Retained-Earnings,retained_earnings,,Retained Earnings,Gewinnvortrag,,
-qbo,Equity:Owners-Draw,private,,Owner's Draw,Privatentnahmen,,
-qbo,Equity:Owners-Investment,private,,Owner's Investment,Privateinlagen,,
+qbo,Equity:Owners-Draw,private,,Owner's Draw,Privatentnahmen,,,owner
+qbo,Equity:Owners-Investment,private,,Owner's Investment,Privateinlagen,,,owner
+qbo,Liabilities:Due-to-Shareholder,shareholder,,Due to Shareholder,Verrechnungskonto Gesellschafter,,,company
 qbo,Equity:Opening-Balance,opening,,Opening Balance Equity,Eröffnungsbilanz,,
 qbo,Income:Discounts-Given,discount_granted,,Discounts given,Gewährte Rabatte,,
 qbo,Expenses:Discounts-Received,discount_received,,Discounts received,Erhaltene Skonti,,

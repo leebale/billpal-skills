@@ -6,7 +6,9 @@ These rules set defaults and warnings. They are not legal advice and they are no
 
 Report codes (Kennzahlen on the VAT return) are `null` in this skill until each mapping has been checked against the current form. Do not write a Kennzahl into `report_codes` from memory. When the user gives you the mapping (for example from their accountant), store it on the rule or the booking and say where it came from.
 
-`ledger.py` holds the depreciation defaults below in `COUNTRY_RULES`. Everything else here is guidance for you.
+`ledger.py` holds the depreciation defaults and the standard VAT rate below in `COUNTRY_RULES`. Everything else here is guidance for you.
+
+**Reverse charge derived by the commit (AT and DE).** When a bill from a supplier abroad shows no VAT, `commit --documents` books reverse charge at the standard rate. It assumes a service. A goods invoice from abroad is rebooked as `import` or `intra_community`. Small businesses owe reverse charge VAT on some foreign services too, without deducting it, so their derived bookings stay unconfirmed until the user (or the accountant) confirms them. Germany has no standard rate for 2020 in the script (16 % from July to December), so nothing is derived for that year.
 
 ## Austria (AT)
 
@@ -27,7 +29,8 @@ Report codes (Kennzahlen on the VAT return) are `null` in this skill until each 
 
 Things that come up in almost every Austrian small business:
 
-- **Abgabenkonto.** One tax-office account for VAT, income tax prepayments, and other levies. A single payment often covers several taxes. Split every payment by what it pays: VAT payments settle the VAT liability (`Liabilities:Tax-Office` or the VAT account), income tax for a sole trader or partner is private (`Equity:Private`). Ask for the Buchungsmitteilung or the FinanzOnline account statement when the bank text does not say.
+- **Abgabenkonto.** One tax-office account for VAT, income tax prepayments, and other levies. A single payment often covers several taxes. Split every payment by what it pays: VAT payments settle the VAT liability (`Liabilities:Tax-Office` or the VAT account), income tax for a sole trader or partner is private (`Equity:Private`). When the bank text does not say, ask the user what the payment was: the UVA, an income tax prepayment, or both, and how much of each. The Buchungsmitteilung or the FinanzOnline account statement shows it.
+- **GmbH and FlexCo.** Körperschaftsteuer prepayments, including the Mindestkörperschaftsteuer, also run through the Abgabenkonto. Book them to `Assets:Corporate-Tax-Prepaid` (EKR group 25); the accountant books the tax for the year (group 84) at the year end. Money between the company and a shareholder goes to `Liabilities:Shareholder` (EKR 346, Verbindlichkeiten gegenüber Gesellschaftern). Source: Österreichischer Einheitskontenrahmen, Kontenklassen 2, 3, and 8.
 - **SVS.** Social insurance of a sole trader is a business expense, out of scope for VAT (`tax.regime` `out_of_scope`). A good first rule.
 - **Private use.** A sole trader's private share of a car, phone, or computer: book the business share as the expense, the rest to `Equity:Private`. For bills that come every month, a rule with `share`; for costs paid from a private account, an allocation. For assets, use `private_share` on the asset record.
 - **Home office.** Ask whether the room is used only for the business and is the center of the activity. If yes, allocate by floor area. If not, tell the user about the Arbeitsplatzpauschale. The accountant decides which applies.
@@ -53,6 +56,8 @@ Things that come up in almost every Austrian small business:
 
 The amounts of the Jahrespauschale and the Homeoffice-Pauschale are not in this file. Look them up in the official source for the year, or ask the accountant.
 
+**GmbH and UG.** Book Körperschaftsteuer prepayments, with the Solidaritätszuschlag on them, to `Expenses:Corporate-Tax` (SKR03 2200, SKR04 7600). Money between the company and a shareholder goes to `Liabilities:Shareholder` (SKR03 1665, SKR04 3640, Verbindlichkeiten gegenüber GmbH-Gesellschaftern). When the shareholder owes the company at the year end, the accountant moves the balance to the receivable account (SKR03 1381, SKR04 1307). Source: DATEV-Kontenrahmen SKR03 and SKR04, 2026.
+
 Not modeled: the Sammelposten for assets between 250 and 1,000 EUR (EStG § 6 Abs. 2a). When the user uses it, book the items as one asset per year with a 60-month life and `first_year` `full_year`, and say so.
 
 ## United States (US)
@@ -63,8 +68,10 @@ Not modeled: the Sammelposten for assets between 250 and 1,000 EUR (EStG § 6 Ab
 | Basis | Cash or accrual, chosen on the first return | – | IRC § 446 |
 | De minimis safe harbor | Items up to 2,500 USD each can be expensed (5,000 USD with an audited financial statement). Book them as GWG with `gwg_limit` `2500` when the user makes the election | 2016– | Treas. Reg. § 1.263(a)-1(f) |
 
+**LLCs and corporations.** An LLC taxed as a sole proprietorship or a partnership keeps the owner's draw and investment accounts (`company` `false`). A C corporation, an S corporation, or an LLC that elected to be taxed as one is a company (`company` `true`): money between the company and a shareholder goes to `Liabilities:Due-to-Shareholder` until the CPA books it as a loan, a contribution, or a distribution. The `qbo` chart has no income tax account; add one when the CPA gives it.
+
 `ledger.py` has no US depreciation default. Tax depreciation (MACRS, Section 179, bonus depreciation) is not modeled: book straight-line depreciation for the books, give `first_year`, and tell the user their CPA sets the tax depreciation.
 
 ## Other countries
 
-Ask for the tax family (VAT, GST, sales tax), the rates, the treatment names the user's accountant uses, and the chart of accounts. Use the user's own chart. Give `first_year` and `gwg_limit` on each asset record, because the script has no default for the country.
+Ask for the tax family (VAT, GST, sales tax), the rates, the treatment names the user's accountant uses, and the chart of accounts. Use the user's own chart. Give `first_year` and `gwg_limit` on each asset record, because the script has no default for the country. For a company (for example a UK Ltd), open the shareholder account (in the UK the director's loan account) with role `shareholder` and leave out private accounts.

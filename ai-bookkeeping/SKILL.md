@@ -39,7 +39,7 @@ One folder per business, for example `books/`. In it:
 Where the folder is depends on the assistant:
 
 - **An assistant that reads and writes local files** (Claude Cowork, Claude Code, and similar): use a folder on the user's computer. This is the best setup.
-- **A chat with code execution** (Claude, ChatGPT): files live in the sandbox only for this conversation. At the end of each session, give the user the newest ledger file to download, and ask them to upload it at the start of the next one. Say this clearly the first time.
+- **A chat with code execution** (Claude, ChatGPT): files live in the sandbox only for this conversation, and Billpal does not keep the ledger file. Make sure the user downloads the newest version when a step is done, and uploads it at the start of the next chat. Say this once, clearly; do not repeat it every turn.
 - **Google Drive, Dropbox, or another storage connection:** optional. If the connection can write files, save each new version there as well. If it can only read, use it to fetch statements and documents.
 
 At the start of every session run `python3 ledger.py status <newest ledger>`. It shows the version, balances, staged files that were never committed, and forks. A fork means two different files claim the same parent, usually because two chats wrote to the books. Stop and ask which one to keep. The script can only see a fork when both files are in the folder.
@@ -48,9 +48,9 @@ At the start of every session run `python3 ledger.py status <newest ledger>`. It
 
 ## First run: set up the books
 
-Ask, in this order, and keep it short. Skip what the user already told you.
+Ask, in this order, and keep it short. Skip what the user already told you. With a Billpal account, `list_workspaces` returns the workspace's `country` and `tax_id`: propose that country and let the user confirm it, and show the tax id as context. Never set `vat_status` from it; a tax id does not say whether the business is a small business.
 
-1. Business name, country, legal form (sole trader, GmbH, LLC, …), and what the business does.
+1. Business name, country, legal form (sole trader, GmbH, LLC, …), and what the business does. Then: does the business pay tax on its own profit, as a company? GmbH, UG, AG, FlexCo, Ltd, Inc, and an LLC taxed as a corporation do: set `company` `true` (see "Companies"). A sole trader, a partnership (OG, KG, GbR), and an LLC taxed as its owners do not. When unsure, ask the accountant.
 2. Fiscal year (usually the calendar year; a shortened or shifted year works).
 3. **Basis:** cash basis (Einnahmen-Ausgaben-Rechnung, EÜR) or accrual (double-entry with customer and supplier accounts). When unsure, ask the accountant. Small sole traders in AT and DE usually use cash basis.
 4. **VAT status:** regular, small business (Kleinunternehmer), exempt, or none. If regular: VAT on the invoice or the payment basis (Soll- or Istbesteuerung), and the VAT period (month, quarter, year).
@@ -73,9 +73,9 @@ If the opening lines do not balance and the user cannot find the difference, the
 Each source becomes a statement JSON (`statement/1`, Appendix): one account, one period, an opening and a closing balance, and the rows in order. The opening of each statement must equal the ledger's balance for that account, and the opening plus the rows must equal the closing. This catches missing pages, missing months, and double imports.
 
 - **CAMT.053** (XML from online banking): `python3 ledger.py from-camt file.xml --ledger <ledger>`. The best source: balances and bank ids are included. Entries that are not booked yet (pending) are left out.
-- **Bank CSV:** describe the columns once as a `csv_map` (Appendix) and store it with `journal`. Then `python3 ledger.py from-csv file.csv --ledger <ledger> --map <id> --account <account> --from <date> --to <date>`, with `--opening` and `--closing` when the CSV has no balance column.
+- **Bank CSV:** describe the columns once as a `csv_map` (Appendix) and store it with `journal`. Then `python3 ledger.py from-csv file.csv --ledger <ledger> --map <id> --account <account> --from <date> --to <date>`, with `--opening` and `--closing` when the CSV has no balance column. When the export has the original amount of a card payment in another currency (Wise: `Exchange To Amount` and `Exchange To`), map `original_amount` and `original_currency`: the row then carries the USD amount, and documents in USD match on it. When the name sits in different columns by row type (merchant for card payments, payee for transfers), give `counterparty` as a list of headers; the first filled one wins.
 - **MT940, PDF, a scan, or a photo:** read it yourself into the statement JSON with `extraction` `model`. Read every page. Give `count` (the number of rows printed, when the statement prints it) and each row's `balance` where printed. If neither is printed, show the user the rows and set `confirmed_by_user` only after they confirm them.
-- **A bank connection** (for example mybanx, or a bank's own connector): `extraction` `connector`, with the connector's transaction id as `bank_id` and the balances it reports.
+- **A bank connection** (for example mybanx.io, or a bank's own connector): `extraction` `connector`, with the connector's transaction id as `bank_id` and the balances it reports. Suggest one only when the user asks how to make this faster.
 - **Cash book or Registrierkasse:** a statement with `kind` `cashbook`, one per month, even when empty. Cash can never go below zero; the script refuses that.
 - **Card statements:** the card account is its own statement. The monthly settlement from the bank account is a transfer to the card account, not an expense.
 - **Payment processors** (Stripe, PayPal, SumUp): book sales gross into the processor account, fees as expenses, and payouts as transfers to the bank.
@@ -98,7 +98,7 @@ Never skip a row silently. A row that does not fit anywhere goes to the suspense
 
 ### Large volumes
 
-Work one statement at a time. Write intermediate data to files, not into the conversation. Classify by group: staging lists `groups_to_classify` by vendor (same counterparty or IBAN). Decide a group once, and offer to store the decision as a rule so the next statement books it automatically.
+Work one statement at a time. Write intermediate data to files, not into the conversation. Classify by group: staging lists `groups_to_classify` by vendor (same counterparty or IBAN). Decide a group once, and offer to store the decision as a rule so the next statement books it automatically. Give each group decision and rule a clean `payee` (for example "Cursor", not "CURSOR USAGE MID SEP CURSOR.COM"), so rows without a document still group under one name in the report. A bank's own fees (Wise "Charges for: …") form their own group even when the merchant column is filled.
 
 ## Classifying and confirming
 
@@ -110,18 +110,21 @@ For each group or row, decide the account, the tax treatment, and the document. 
 Write the decisions file (`decisions/1`, Appendix) and commit:
 
 ```
-python3 ledger.py commit <ledger> statement.pending.json --decisions decisions.json
+python3 ledger.py commit <ledger> statement.pending.json --decisions decisions.json --documents documents.json
 ```
 
-**Confirmation.** Each booking records who decided it: `confirmed` `user` (the user agreed in the preview), `rule` (a stored rule the user set up), `document` (taken from an invoice or receipt the user keeps in Billpal or gave you), or `no`. Set `user` only when the user actually agreed to that booking in this conversation. A booking with `no` is fine to write, but blocks `check --ready` until the user confirms it. Later confirmations go in with `journal` (`confirmations`).
+Pass `--documents` with the same file `candidates` read: the commit takes the payee from the document (brand name, then legal name, then name) when the decision gives none, and derives the tax treatment when the document shows no VAT (see Tax treatment).
+
+**Confirmation.** Each booking records who decided it: `confirmed` `document` (taken from an invoice or receipt the user keeps in Billpal or gave you), `rule` (a stored rule the user set up), `user` (only for a booking or group the user actually answered in this conversation), or `no`. `no` stays on whatever is still open. It is fine to write, but blocks `check --ready` until the user confirms it. Never change `no` to `user` to make `check --ready` pass. Later confirmations go in with `journal` (`confirmations`).
 
 **Every booking needs a document or a reason.** Attach the invoice or receipt (`document`). If there is none by nature (bank fee, tax payment, own transfer, social insurance), give `no_document` with the reason. Anything else is a missing receipt: it is listed prominently in every readiness check and report.
 
 ### Tax treatment
 
-Each line on an income, expense, or fixed-asset account carries a `tax` object (Appendix): the regime, the rate in percentage points (`"20"`, never `0.2`), and where it came from (`source`: `document`, `user`, `rule`, or `agent`). The script splits gross into net and tax, picks the tax account, and books self-assessed VAT (reverse charge, intra-community) on both sides.
+Each line on an income, expense, or fixed-asset account carries a `tax` object (Appendix): the regime, the rate in percentage points (`"20"`, never `0.2`), and where it came from (`source`: `document`, `user`, `rule`, `agent`, or `derived`). The script splits gross into net and tax, picks the tax account, and books self-assessed VAT (reverse charge, intra-community) on both sides.
 
 - Take the treatment from the document when there is one. Without a document, propose one and mark it `source` `agent`: it stays unconfirmed until the user agrees.
+- When the document shows no VAT, leave `tax` off the line. Never invent one. With `--documents`, the commit derives reverse charge at the standard rate (`source` `derived`) when the supplier is abroad, the user is VAT-registered or a small business, and nothing on the document says otherwise. Only income, expense, and fixed-asset lines get it, never a private share. A batch derives it only when all its documents agree; otherwise give `tax` on each line. `candidates` shows it as `derived_tax`: tell the user. It assumes a service (see `countries.md`).
 - Regimes: `standard`, `reverse_charge`, `intra_community`, `import`, `exempt`, `zero`, `export`, `out_of_scope`.
 - A small business (`small_business`) charges no VAT and deducts none. The script refuses VAT on its sales.
 - Cash-basis books with VAT on the invoice basis need the invoice date as `tax.point` when it differs from the payment.
@@ -133,12 +136,20 @@ Each line on an income, expense, or fixed-asset account carries a `tax` object (
 - **Own transfers** between the business's accounts (bank to savings, bank to card, ATM to cash): book both sides through the clearing account (`Assets:Transit`), never as income or expense. When both statements arrive, each side books against the clearing account, and it returns to zero.
 - **Card settlements:** the bank row is a transfer to the card account. The purchases are on the card statement.
 - **Processor payouts** (Stripe, PayPal): the payout is a transfer. The sales and fees are booked from the processor's report.
-- **Tax office payments** (Abgabenkonto in AT, Finanzamt in DE): split by what they pay. VAT settles the VAT liability; a sole trader's income tax is private.
+- **Tax office payments** (Abgabenkonto in AT, Finanzamt in DE): split by what they pay. VAT settles the VAT liability; a sole trader's income tax is private; a company's corporate income tax is its own (`countries.md`).
 - **Loans:** the repayment of principal is not an expense. Only the interest is. Ask for the loan schedule.
 - **Refunds and chargebacks:** book against the account of the original booking, with the same tax treatment, not as income.
 - **Bank fees:** an expense, usually exempt from VAT.
-- **Private deposits and withdrawals:** `Equity:Private`, without VAT.
-- **Foreign currency:** the ledger has one currency. A row in another currency needs `fx` with the original amount, currency, and rate. A missing rate is rejected.
+- **Private deposits and withdrawals:** `Equity:Private`, without VAT. On a company: the shareholder account.
+- **Foreign currency:** the ledger has one currency. A row in another currency needs `fx` with the original amount, currency, and rate. A missing rate is rejected. A card payment in USD from a euro account is booked at the bank's euro amount; its `fx` is only the original amount for matching.
+
+### Companies
+
+On a company (`company` `true`), the built-in charts open a shareholder clearing account (`Liabilities:Shareholder`, Verrechnungskonto Gesellschafter; in the UK the director's loan account) and no private accounts. Wherever this skill says `Equity:Private`, the script uses that account: a private share of a cost, a shareholder paying a company bill, money the company pays out to the shareholder. A company has no private money. The account is a claim between company and shareholder and carries into the next year; the accountant shows it as a receivable or a liability.
+
+- Never book the shareholder's private costs as company expenses. Book them to the shareholder account and flag them for the accountant: in a company they can be a covert profit distribution (verdeckte Gewinnausschüttung in DE, verdeckte Ausschüttung in AT).
+- A shareholder loan with a contract, dividends, and the managing director's salary are the accountant's call. Book them as `journal` entries when the accountant gives them.
+- On the user's own chart, give the shareholder account role `shareholder`.
 
 ## Costs shared with private life
 
@@ -161,7 +172,7 @@ On accrual books, invoices are booked when issued or received, and payments sett
 
 1. Stage the documents (`documents/1`, Appendix): `python3 ledger.py stage-documents <ledger> documents.json`. The script skips what is already booked, counts a receipt linked to an invoice only once, leaves reminders out, and holds back documents still in review. It proposes accounts for new customers and suppliers.
    - `party_matched_by` says how the account was found: `personenkonto`, `iban`, `name`, or `new`. A `name` match is not booked until the user confirms it: ask, then give `party_account` or `party_confirmed` `true` on its decision. `ambiguous` means several accounts fit: ask which one and give it as `party_account`.
-   - A line with `needs_tax` has no tax treatment yet. A line with `amount_is` `unknown` is booked only when exactly one reading (net or gross) adds up to the document's total; otherwise give `amount_is`.
+   - A line with `needs_tax` has no tax treatment yet. A document with `derived_tax` had no VAT from a supplier abroad: its lines carry reverse charge now. Tell the user. A line with `amount_is` `unknown` is booked only when exactly one reading (net or gross) adds up to the document's total; otherwise give `amount_is`.
 2. Confirm the accounts with the user and commit: `python3 ledger.py commit-documents <ledger> documents.pending.json --decisions decisions.json`.
    - A document in review is not booked. The commit records it as held, and readiness fails for its period until it is booked. When the user has resolved it in Billpal, fetch it again, stage it, and commit with `review_resolved` `true` on its decision.
 3. Stage the bank statement as usual, then find the open invoices each payment settles:
@@ -174,7 +185,13 @@ Each line of a payment on a Personenkonto carries `allocations`: which documents
 
 ## Matching payments to documents
 
-`candidates` shortlists documents for each staged row: the date window fits (a receipt within 7 days, an invoice from 14 days before its date to 42 days after it is due), the direction fits, and something besides the amount links them (the name, the IBAN, or the document number in the payment text). An amount alone is never a match.
+`candidates` shortlists documents for each staged row: the date window fits (a receipt within 7 days, an invoice from 14 days before its date to 42 days after it is due), the direction fits, and something besides the amount links them (the legal or brand name, the IBAN, or the document number in the payment text). An amount alone is never a match.
+
+- When the row carries the original amount in the document's currency (`fx`), amounts compare in that currency: 100.18 USD on the invoice and 100.18 USD on the card payment is `exact`, whatever the euro amount. The booking keeps the bank's euro amount.
+- An invoice and its linked receipt count once, as the invoice (`linked_receipts` names the receipt). A receipt whose invoice is not in the file is offered on its own. Billpal's links are correct: never pair documents by number yourself.
+- Payments and documents with the same supplier and amount are paired as a whole, by the smallest total date gap. Take the pairing as given unless `needs_user` is set.
+- A bank's own fee row (`bank_fee`) is never matched to a document.
+- `commit` refuses one document as a full match (`exact`, `skonto`, `fx_difference`, `batch`) on two rows, or on a row when it is already booked. An invoice and its linked receipt count as one document here. A second partial payment is fine.
 
 Candidate types:
 
@@ -187,7 +204,7 @@ Candidate types:
 
 You pick, the user confirms. `needs_user` `true` means there is more than one plausible answer: show the options. `too_many_candidates` means the shortlist was too large to search for batches: ask the user which documents the payment covers. Store the candidate's `explanation` in the decision's `match`.
 
-On cash-basis books, pass the user's documents with `--documents documents.json` to attach receipts and invoices to bank rows. Documents still in review are never offered; they are listed under `held_in_review`, saved in the pending file, and recorded by `commit`. Readiness blocks that period until they are resolved and booked. A document in another currency needs `fx_rate` before `candidates` reads it.
+On cash-basis books, pass the user's documents with `--documents documents.json` to attach receipts and invoices to bank rows. Documents still in review are never offered; they are listed under `held_in_review`, saved in the pending file, and recorded by `commit`. Readiness blocks that period until they are resolved and booked. A document in another currency without `fx_rate` is matched only on the original amount of a row; give `fx_rate` to match it against euro amounts.
 
 ## Assets and depreciation
 
@@ -228,7 +245,7 @@ It fails, with the items to fix, when anything up to that date is:
 - a staged file never committed, or a fork;
 - missing opening balances.
 
-Missing receipts do not fail the check, but are always listed. Name them first in your summary: the accountant will ask for them.
+Missing receipts do not fail the check, but are always listed. Name them first in your summary: the accountant will ask for them. Quote `missing_receipts_count` and `missing_receipts_by_party` (payee, count, amount) from `report` or `check` as they are. Do not add the rows up again yourself; the listed items stop at 50.
 
 A month counts from the day the account was opened (the account's `date`), so an account opened mid-year needs statements from then on.
 
@@ -255,12 +272,15 @@ python3 ledger.py report <ledger> --out-dir books/reports --to 2026-03-31 --by q
 This writes `report.html` (one self-contained file), CSV files, and `report-data.json`:
 
 - profit and loss (on cash basis: income and expenses), by month or quarter with `--by`;
+- each income and expense account opened down to its payees and their bookings;
 - balance sheet or account balances;
 - VAT by period and treatment (a summary, not a filing);
 - open items with aging (accrual);
 - the asset register;
-- missing receipts;
+- missing receipts, by payee and one by one;
 - trial balance and journal.
+
+The first report is the dashboard: give the user `report.html`, where they open an account, then a payee, then the single bookings. Sections with nothing in them are left out.
 
 German reports (`--lang de`, the default for a German-language profile) use a semicolon and a decimal comma in the CSV, so Excel opens them correctly.
 
@@ -275,10 +295,8 @@ Billpal keeps the user's invoices and receipts with their amounts, VAT, lines, a
 
 **Read:**
 
-- `search_documents` for the period, both directions, types `invoice`, `credit_note`, `receipt`, and `reminder`. Page with `offset` (`limit` up to 100) until `truncated` is false.
-- `get_document` for each. It returns the stored values, including the user's corrections: these win over anything you read from the file.
-- `get_contact` for each supplier and customer on them (for the Personenkonto and IBANs), and `list_chart_accounts` once (for the account codes on lines).
-- Save the results unchanged in one file, `{"documents": [get_document results], "contacts": [get_contact results], "chart_accounts": <list_chart_accounts result>}`, and convert it. Never map the fields yourself:
+- `get_documents` with the period's filters (`date_from`, `date_to`; leave out `type` and `direction` to get everything), `offset` from 0 and `limit` up to 50. Each page returns the full documents (with the user's corrections, which win over anything you read from a file), their `contacts`, and `chart_accounts`. Page until `has_more` is false. If a page comes back cut off, lower `limit` and go on from the same `offset`. If `truncated` is true, stop and tell the user the list is incomplete. Never fetch a sample and guess the rest.
+- Concatenate every page into one file, `{"documents": [...], "contacts": [...], "chart_accounts": <from any page>}`, unchanged, and convert it once. Never map the fields yourself:
 
 ```
 python3 ledger.py from-billpal billpal.json
@@ -286,7 +304,8 @@ python3 ledger.py from-billpal billpal.json
 
 It writes `billpal.documents.json` (`documents/1`) and lists `notes` for what it could not map: a document without direction or date, a missing contact, a tip without lines. Read the notes to the user. The script handles the details: the discount, a credit note's sign, a line without tax type or regime (it takes both from the header tax with the same rate), a tip as a line without VAT, the receipt that confirms an invoice's payment (`linked`, booked once), the invoice a credit note reduces (`applies_to`), and documents in Review (`review_open`).
 
-- Add `fx_rate` to a document in another currency, and `terms` when the user tells you the Skonto terms: Billpal has neither.
+- On accrual books, add `fx_rate` to a document in another currency. On cash books it is not needed when the bank rows carry the original amount. Add `terms` when the user tells you the Skonto terms. Billpal has neither.
+- Each party keeps its legal name, brand name, `country`, and `tax_id_country` (an ISO code, or `EU` for an EU OSS number, which is not a country). The commit uses them for the payee and the derived tax.
 - A document in review is never booked silently. Ask the user to resolve it in Billpal, then fetch it again.
 - Bank statements are usually not in Billpal. Take them from the user or a bank connection.
 
@@ -316,7 +335,7 @@ Without a Billpal account, the user gives you the documents as files, and you re
 ## Before you commit
 
 - The preview was shown, and the user agreed to everything marked `confirmed` `user`.
-- Every line on income, expenses, or assets has a tax treatment, and you guessed none of them.
+- Every line on income, expenses, or assets has a tax treatment, or is left for the commit to derive from a document without VAT, and you guessed none of them.
 - Every booking has a document or a `no_document` reason.
 - Own transfers go through the clearing account.
 - Ambiguous rows were decided by the user.
@@ -339,8 +358,8 @@ All commands print JSON: `{"ok": true, ...}`, or `{"ok": false, "errors": [...]}
 | `stage LEDGER STATEMENT` | Check and mark rows, write a pending file |
 | `candidates LEDGER PENDING [--documents FILE]` | Matching documents for staged rows |
 | `allocate LEDGER STATEMENT` | Business shares of costs paid from a private account, as a journal proposal |
-| `from-billpal FILE` | Billpal `get_document` results to `documents/1` |
-| `commit LEDGER PENDING --decisions FILE` | Book a staged statement |
+| `from-billpal FILE` | Billpal `get_documents` pages to `documents/1` |
+| `commit LEDGER PENDING --decisions FILE [--documents FILE]` | Book a staged statement |
 | `stage-documents LEDGER DOCUMENTS` | Accrual: stage invoices and credit notes |
 | `commit-documents LEDGER PENDING --decisions FILE` | Book staged documents |
 | `journal LEDGER FILE` | Entries, accounts, rules, allocations, CSV maps, assets, profile changes, confirmations |
@@ -375,10 +394,10 @@ Unknown fields are rejected. Money is a decimal string (`"1190.00"`), never a JS
 }
 ```
 
-- `profile`: also `input_vat_basis` (defaults by country), `business`, `employees`, `tax_advisor`, `notes`.
+- `profile`: also `company` (`true` for a business taxed as a company; the chart then opens the shareholder account instead of the private accounts), `input_vat_basis` (defaults by country), `business`, `employees`, `tax_advisor`, `notes`.
 - `chart`: a built-in chart from `charts.csv`, or leave it out and give every account under `accounts`. `skip_accounts` drops chart accounts the business does not need.
 - `accounts`: `account` (Beancount path), `name`, `code`, `role`, `personenkonto`, `iban`, `tax_regime` and `tax_rate` (for tax accounts), `billpal_account`, `date` (the day it was opened, when after the start of the year).
-- Roles: `bank`, `cash`, `card`, `processor`, `clearing`, `ar`, `ap`, `vat_in`, `vat_out`, `suspense`, `discount_received`, `discount_granted`, `depreciation`, `accumulated_depreciation`, `fixed_asset`, `retained_earnings`, `private`, `opening`, `fx_diff`. A sub-account inherits its parent's role. A tax account matches by role, regime, and rate.
+- Roles: `bank`, `cash`, `card`, `processor`, `clearing`, `ar`, `ap`, `vat_in`, `vat_out`, `suspense`, `discount_received`, `discount_granted`, `depreciation`, `accumulated_depreciation`, `fixed_asset`, `retained_earnings`, `private` (closed into retained earnings at year end), `shareholder` (carried forward), `opening`, `fx_diff`. A sub-account inherits its parent's role. A tax account matches by role, regime, and rate.
 - `opening`: balanced lines on the first day. Accrual books give each open invoice its own line with `document`, `document_number`, `document_date`, `due_date`, and `party`. `suspense_confirmed` `true` when the user agreed to park a difference. Or `"new_business": true` without opening lines.
 - `previous`: set by `rollover`.
 
@@ -428,7 +447,7 @@ Unknown fields are rejected. Money is a decimal string (`"1190.00"`), never a JS
 
 `type`: `vat` (the default), `gst`, `sales_tax` (US: collected on sales, part of the cost on purchases), or `other`.
 
-Also: `amount` (the tax printed on the document, when it differs from the calculation by rounding), `recoverable` (share of input VAT that can be deducted, `"1"` by default), `point` (tax date), `direction` (`purchase` or `sale`, defaults from the account), `exemption_reason`, `report_codes` (only when verified: `[{"code": "…", "part": "base|tax|input_tax"}]`), `confirmed`.
+Also: `amount` (the tax printed on the document, when it differs from the calculation by rounding), `recoverable` (share of input VAT that can be deducted, `"1"` by default), `point` (tax date), `direction` (`purchase` or `sale`, defaults from the account), `exemption_reason`, `report_codes` (only when verified: `[{"code": "…", "part": "base|tax|input_tax"}]`), `confirmed`. `source` `derived` is set by the commit only, never by you.
 
 ### Documents (`documents/1`)
 
@@ -436,7 +455,7 @@ Also: `amount` (the tax printed on the document, when it differs from the calcul
 {"schema": "documents/1", "documents": [{
   "id": "billpal:1234", "kind": "invoice", "direction": "in", "number": "L-555",
   "date": "2026-01-10", "due_date": "2026-02-09", "currency": "EUR",
-  "party": {"name": "Lieferant Schulz KG", "iban": "DE02...", "personenkonto": "70001"},
+  "party": {"name": "Lieferant Schulz KG", "iban": "DE02...", "personenkonto": "70001", "country": "DE"},
   "total": "1190.00",
   "taxes": [{"type": "vat", "regime": "standard", "rate": "19", "base": "1000.00", "amount": "190.00"}],
   "lines": [{"description": "Ware", "amount": "1000.00", "amount_is": "net", "account_code": "3400",
@@ -491,7 +510,7 @@ Also: `iban`, `amount_min`, `amount_max`, `to` (end date, for example after a mo
              "text": "Buchungstext", "counterparty": "Partnername", "iban": "Partner IBAN", "balance": "Saldo"}}
 ```
 
-Columns: `booking_date`, `value_date`, `amount` (or `debit` and `credit`), `text`, `counterparty`, `iban`, `reference`, `balance`, `bank_id`, `currency`. `invert_sign` for banks that print debits as positive. `order` `desc` when the newest row comes first.
+Columns: `booking_date`, `value_date`, `amount` (or `debit` and `credit`), `text`, `counterparty` (one header, or a list where the first filled one wins), `iban`, `reference`, `balance`, `bank_id`, `currency`, and `original_amount` with `original_currency` (together). The bank's own exchange rate column is not used: the rate is the booked amount divided by the original. `invert_sign` for banks that print debits as positive. `order` `desc` when the newest row comes first.
 
 ### Asset
 

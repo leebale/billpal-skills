@@ -9,7 +9,9 @@ Free skills for Claude and ChatGPT. Each skill runs on its own. A Billpal accoun
 
 To use a skill:
 
-- **Claude:** upload the ZIP under Settings, Capabilities, Skills. Turn on code execution.
-- **ChatGPT:** drop the ZIP into the chat and ask it to follow the skill. A link alone is not enough for the SEPA skill or the e-invoice step, because ChatGPT usually can't download files from the internet while it runs code.
+- **Claude:** turn on code execution under Settings, Capabilities. Then open Customize, Skills, select +, Create skill, Upload a skill, and choose the ZIP.
+- **ChatGPT:** open Plugins in the sidebar, then the Skills tab. Select Create, then Upload from your computer, and choose the ZIP.
+
+A link to this repository in a chat is not enough: neither assistant installs a skill from a link. Step-by-step guide: https://help.billpal.io/en/ai-bookkeeping-skill
 
 Billpal: https://billpal.io

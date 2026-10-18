@@ -12,13 +12,15 @@ description: >
 
 Write one invoice the user can send. Answer in the user's language.
 
+This skill is a folder: this file, `sample-denylist.json`, `e-invoice.md`, `generate.py`, and `vendor/`. If you only have a link to this file, try once to get the folder: download https://github.com/leebale/billpal-skills/releases/latest/download/invoice-generator.zip, or `git clone https://github.com/leebale/billpal-skills`. If that fails, ask the user to attach that ZIP in your first message, not halfway through the invoice.
+
 ## Company card
 
 Remember one company card only if the user agrees. The card lives in this assistant, not in Billpal.
 
-Ask before saving. Bank details are a separate yes. Do not store an IBAN on the first yes to the company name.
+Offer it once, after the user approves their first invoice. Ask before saving. Bank details are a separate yes. Do not store an IBAN on the first yes to the company name.
 
-Save: legal name, address, VAT id or German tax number (Steuernummer), invoice language, number format, date format, currency, the last invoice number, and (only after a separate yes) IBAN and BIC.
+Save: legal name, address, VAT id or German tax number (Steuernummer), invoice language, number format, date format, currency, payment terms, the template, the last invoice number, and (only after a separate yes) IBAN and BIC.
 
 If assistant memory is off, give the card back as a short text block the user can paste next time. Do not pretend it was saved.
 
@@ -26,13 +28,13 @@ If assistant memory is off, give the card back as a short text block the user ca
 
 Never pick the tax regime. Ask.
 
-Also ask, unless the card already has them and the user confirms they still apply:
+Ask in one message for everything the invoice still needs from the field list below. That usually means the invoice number, the issue date, the service date or period, the tax regime, the payment terms, and bank details if they go on the invoice. Ask for each one on its own. Do not bundle two fields into one question.
 
-- Language: German or English.
-- Number format and date format.
-- Currency.
+Language, number format, date format, and currency: propose what the request already shows (German text and amounts in euros suggest German and EUR, for example) and let the user confirm in the same message. Values on the company card count as proposals too.
 
-Show the invoice and wait. Do not send it, and do not invent a VAT id, an IBAN, a tax rate, or an invoice number.
+If an answer leaves a required field open, ask again for that field. Never fill it with a guess, such as the current month for the service period.
+
+Show the invoice and wait. Do not send it, and do not invent a VAT id, an IBAN, a tax rate, or an invoice number. When you change the invoice, save it under a new name (`-v2`, `-v3`), so an old link does not open the old file.
 
 ## Fields a usable invoice has
 
@@ -76,7 +78,11 @@ Use the first one that fits.
 
 ## Host limits
 
-A sandbox with no internet cannot fetch a Billpal template. Ask the user to download it and attach it. The plain default still works.
+Download a Billpal template before you build anything with it. If the download fails, stop and tell the user. Never rebuild a Billpal design by hand. Offer these instead:
+
+- The user downloads the file from the link above and attaches it.
+- The user allows billpal.io for the sandbox. On Claude: Settings, Capabilities, Allow network egress, Domain allowlist, then add `billpal.io` under Additional allowed domains. Retry after their next message. On other hosts, say that the sandbox blocked billpal.io.
+- The plain default.
 
 Turning a filled `.docx` into a PDF needs LibreOffice. If it is missing, deliver the `.docx` or `.xlsx` and say that the PDF was not made. The plain default does not depend on that conversion.
 
@@ -89,6 +95,8 @@ Before writing:
 - Map the page. Name each region (seller, buyer, meta, lines, totals, payment, footer) and what you will put there.
 - One cell per field in a spreadsheet. Amounts, quantities, and totals are formulas, not typed numbers.
 - If a logo sits on a dark rectangle that is only there for the sample, remove that rectangle when the user's logo does not need it.
+- Keep the template's font sizes. If a value does not fit, wrap it or add a line. Never shrink one field to make it fit.
+- Render the page and look at it: nothing overlaps, and nothing runs past the margin.
 
 ## Sample-data check
 
@@ -101,7 +109,7 @@ This check blocks delivery. Read `sample-denylist.json` in this skill folder.
 
 A sample VAT id, IBAN, tax id, email, or invoice number from the list never stays, even if it looks plausible.
 
-If one entry is the user's own legal name, say so, and still remove every other sample string.
+A value the user gave you for this invoice may match an entry, for example their legal name or their IBAN. Keep it, say so in one line, and still remove every other sample string.
 
 ## With a Billpal account
 
@@ -113,7 +121,7 @@ Confirm every value before it lands on the invoice.
 
 ## E-invoice (optional)
 
-The invoice is complete without this step. Offer it once, in one sentence, when the buyer is a business in Germany, where e-invoices are increasingly expected. Do it when the user asks for ZUGFeRD, Factur-X, or an e-invoice. If they say no, do not ask again.
+The invoice is complete without this step. Offer it once, in one sentence, when the buyer is a business in Germany, where e-invoices are increasingly expected. Do it when the user asks for ZUGFeRD, Factur-X, or an e-invoice. If they say no, do not ask again. The check uploads the file to billpal.io, so ask for that in the same message.
 
 For the e-invoice, read `e-invoice.md` in this skill folder and follow it. It needs the finished invoice PDF, code execution, and a seller in an EU country.
 
@@ -121,7 +129,8 @@ For the e-invoice, read `e-invoice.md` in this skill folder and follow it. It ne
 
 The invoice is not done until all of these are true:
 
-- Regime, language, number format, date format, and currency were asked, not guessed.
+- Regime, service date or period, language, number format, date format, and currency were asked or confirmed, not guessed.
 - Every field in the list above is present, or the exemption wording replaces the tax lines.
-- No denylist entry remains, aside from a legal name the user confirmed is theirs.
+- No denylist entry remains, aside from values the user gave for this invoice.
+- The rendered page has no text smaller than the template's and nothing past the margin.
 - The user has seen the invoice and has not yet been told it was sent.

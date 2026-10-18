@@ -26,7 +26,7 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
-from itertools import combinations
+from itertools import combinations, product
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -38,9 +38,12 @@ ROOTS = ("Assets", "Liabilities", "Equity", "Income", "Expenses")
 ROLES = {
     "bank", "cash", "card", "processor", "clearing", "ar", "ap", "vat_in", "vat_out",
     "suspense", "discount_received", "discount_granted", "depreciation",
-    "accumulated_depreciation", "fixed_asset", "retained_earnings", "private",
+    "accumulated_depreciation", "fixed_asset", "retained_earnings", "private", "shareholder",
     "opening", "fx_diff",
 }
+# Owner money: `private` (sole traders, partners) closes into retained earnings at year end,
+# `shareholder` (companies) is a clearing account that carries forward.
+OWNER_ROLES = {"private", "shareholder"}
 MONEY_ROLES = {"bank", "cash", "card", "processor"}
 TRANSFER_ROLES = MONEY_ROLES | {"clearing"}
 PARTY_ROLES = {"ar", "ap"}
@@ -74,7 +77,7 @@ PROFILE_ENUMS = {
     "language": {"de", "en"},
 }
 PROFILE_TEXT = {"country", "legal_form", "business", "chart", "notes", "tax_advisor"}
-PROFILE_BOOL = {"employees"}
+PROFILE_BOOL = {"employees", "company"}
 
 # ISO 4217 minor units. Everything not listed has 2.
 MINOR_UNITS_0 = {
@@ -87,11 +90,14 @@ MINOR_UNITS_3 = {"BHD", "IQD", "JOD", "KWD", "LYD", "OMR", "TND"}
 # the asset record must say it. Sources are listed in countries.md.
 COUNTRY_RULES = {
     "AT": [
-        {"from": 2023, "to": None, "gwg_limit": "1000", "first_year": "half_year"},
-        {"from": 2020, "to": 2022, "gwg_limit": "800", "first_year": "half_year"},
+        {"from": 2023, "to": None, "gwg_limit": "1000", "first_year": "half_year", "vat_standard": "20"},
+        {"from": 2020, "to": 2022, "gwg_limit": "800", "first_year": "half_year", "vat_standard": "20"},
     ],
+    # 2020 has no vat_standard: Germany charged 16 % from July to December.
     "DE": [
-        {"from": 2018, "to": None, "gwg_limit": "800", "first_year": "monthly"},
+        {"from": 2021, "to": None, "gwg_limit": "800", "first_year": "monthly", "vat_standard": "19"},
+        {"from": 2020, "to": 2020, "gwg_limit": "800", "first_year": "monthly"},
+        {"from": 2018, "to": 2019, "gwg_limit": "800", "first_year": "monthly", "vat_standard": "19"},
     ],
 }
 
@@ -963,8 +969,8 @@ def match_spec(spec: dict, book: Book, where: str, allowed: set) -> None:
     if spec.get("share") is not None:
         parse_share(spec["share"], where)
         acct = spec.get("private_account") or private_account(book, where)
-        if book.role_of(acct) != "private":
-            raise LedgerError(f"{where}: private_account {acct} needs role private")
+        if book.role_of(acct) not in OWNER_ROLES:
+            raise LedgerError(f"{where}: private_account {acct} needs role private or shareholder")
 
 
 def parse_share(value, where: str) -> Decimal:
@@ -980,9 +986,9 @@ def parse_share(value, where: str) -> Decimal:
 
 
 def private_account(book: Book, where: str) -> str:
-    accts = book.accounts_with_role("private")
+    accts = sorted(a for a in book.accounts if book.role_of(a) in OWNER_ROLES)
     if len(accts) != 1:
-        raise LedgerError(f"{where}: give private_account, the ledger has {len(accts)} accounts with role private")
+        raise LedgerError(f"{where}: give private_account, the ledger has {len(accts)} accounts with role private or shareholder")
     return accts[0]
 
 
@@ -1025,8 +1031,8 @@ def normalize_tax(tax, book: Book, where: str, prec: int | None = None) -> dict:
     ):
         raise LedgerError(f"{where}: report_codes is a list of {{code, part: base|tax|input_tax}}")
     source = tax.get("source", "agent")
-    if source not in ("document", "rule", "agent", "user"):
-        raise LedgerError(f"{where}: tax source is document, rule, agent or user")
+    if source not in ("document", "rule", "agent", "user", "derived"):
+        raise LedgerError(f"{where}: tax source is document, rule, agent, user or derived")
     confirmed = tax.get("confirmed", source != "agent")
     if not isinstance(confirmed, bool):
         raise LedgerError(f"{where}: tax confirmed is true or false")
@@ -1319,7 +1325,7 @@ def new_txn_id() -> str:
 
 # ── init ─────────────────────────────────────────────────────────────────────
 
-def load_chart(chart: str, lang: str) -> list[dict]:
+def load_chart(chart: str, lang: str, company: bool = False) -> list[dict]:
     path = HERE / "charts.csv"
     with path.open(encoding="utf-8", newline="") as fh:
         rows = [r for r in csv.DictReader(fh) if r["chart"] == chart]
@@ -1327,6 +1333,8 @@ def load_chart(chart: str, lang: str) -> list[dict]:
         raise LedgerError(f"chart {chart!r} is not in charts.csv. Use skr03, skr04, oekr, qbo or give your own accounts")
     out = []
     for r in rows:
+        if r.get("entity") and r["entity"] != ("company" if company else "owner"):
+            continue
         spec = {"account": r["account"], "name": (r["name_de"] if lang == "de" else r["name_en"]) or r["name_en"]}
         for k in ("role", "code", "tax_regime", "tax_rate"):
             if r.get(k):
@@ -1375,7 +1383,8 @@ def build_init(spec: dict, out_dir: Path) -> Book:
     accounts = []
     if spec.get("chart"):
         skip = set(spec.get("skip_accounts") or [])
-        accounts = [a for a in load_chart(spec["chart"], profile.get("language", "en")) if a["account"] not in skip]
+        accounts = [a for a in load_chart(spec["chart"], profile.get("language", "en"), bool(profile.get("company")))
+                    if a["account"] not in skip]
     override = {a.get("account"): a for a in spec.get("accounts") or []}
     accounts = [override.pop(a["account"], a) for a in accounts] + list(override.values())
     opens = open_text(seed, accounts)
@@ -1444,11 +1453,27 @@ def validate_csv_map(cmap: dict) -> None:
         raise LedgerError(f"csv_map {cmap['id']}: unknown fields {sorted(extra)}")
     cols = cmap.get("columns") or {}
     known = {"booking_date", "value_date", "amount", "debit", "credit", "text", "counterparty", "iban",
-             "reference", "balance", "bank_id", "currency"}
+             "reference", "balance", "bank_id", "currency", "original_amount", "original_currency"}
     if set(cols) - known:
         raise LedgerError(f"csv_map {cmap['id']}: unknown columns {sorted(set(cols) - known)}")
+    for key, spec in cols.items():
+        many = key == "counterparty" and isinstance(spec, list)
+        if not (isinstance(spec, str) or spec is None or (many and spec and all(isinstance(c, str) and c for c in spec))):
+            raise LedgerError(f"csv_map {cmap['id']}: column {key} is one header"
+                              + (", or a list of headers where the first filled one wins" if key == "counterparty" else ""))
     if not cols.get("booking_date") or not (cols.get("amount") or (cols.get("debit") and cols.get("credit"))):
         raise LedgerError(f"csv_map {cmap['id']}: needs booking_date and amount (or debit and credit)")
+    if bool(cols.get("original_amount")) != bool(cols.get("original_currency")):
+        raise LedgerError(f"csv_map {cmap['id']}: original_amount and original_currency go together")
+
+
+def csv_headers(spec) -> list[str]:
+    return [] if not spec else spec if isinstance(spec, list) else [spec]
+
+
+def csv_cell(row: dict, spec) -> str:
+    """The first filled cell of a column spec (one header, or a list for counterparty)."""
+    return next((v for v in ((row.get(c) or "").strip() for c in csv_headers(spec)) if v), "")
 
 
 ASSET_KEYS = {"id", "description", "document", "acquired", "in_service", "cost", "life_months", "residual",
@@ -1824,13 +1849,18 @@ def readiness(book: Book, through: date | None, year_end: bool = False, folder: 
         fail("fork", "Two different versions exist. Merge them before going on", scan["forks"])
     if scan["pending"]:
         fail("pending", "Staged files that were never committed", scan["pending"])
-    missing = [f"{t.date} {t.payee} {sum((p.amount for p in t.postings if book.role_of(p.account) in MONEY_ROLES), Decimal(0))} ({t.meta.get('txn_id')})"
-               for t in scope
-               if any(book.role_of(p.account) in MONEY_ROLES for p in t.postings)
-               and not all(book.role_of(p.account) in TRANSFER_ROLES for p in t.postings)
-               and not has_document(t)]
-    if missing:
-        warn("missing_receipts", "Bookings without a receipt or invoice", missing)
+    money = lambda t: sum((p.amount for p in t.postings if book.role_of(p.account) in MONEY_ROLES), Decimal(0))
+    no_doc = [t for t in scope
+              if any(book.role_of(p.account) in MONEY_ROLES for p in t.postings)
+              and not all(book.role_of(p.account) in TRANSFER_ROLES for p in t.postings)
+              and not has_document(t)]
+    if no_doc:
+        warn("missing_receipts", "Bookings without a receipt or invoice",
+             [f"{t.date} {t.payee} {money(t)} ({t.meta.get('txn_id')})" for t in no_doc])
+    by_party = defaultdict(lambda: [0, Decimal(0)])
+    for t in no_doc:
+        by_party[t.payee][0] += 1
+        by_party[t.payee][1] += money(t)
     booked = defaultdict(list)
     for t in scope:
         if t.meta.get("allocation"):
@@ -1860,7 +1890,9 @@ def readiness(book: Book, through: date | None, year_end: bool = False, folder: 
         if len(book.accounts_with_role("retained_earnings")) != 1:
             fail("no_result_account", "Need exactly one retained_earnings account for the rollover")
     return {"ready": not fails, "through": through.isoformat(), "year_end": year_end,
-            "fails": fails, "warnings": warns}
+            "fails": fails, "warnings": warns, "missing_receipts_count": len(no_doc),
+            "missing_receipts_by_party": [{"payee": k, "count": c, "amount": a} for k, (c, a) in
+                                          sorted(by_party.items(), key=lambda kv: (-abs(kv[1][1]), kv[0]))]}
 
 
 def full_periods(lo: date, hi: date, every: str) -> list[tuple[date, date]]:
@@ -2058,17 +2090,17 @@ def from_csv(data: bytes, book: Book, map_id: str, account: str, start: str, end
     lines = text.splitlines()[int(cmap.get("skip_rows", 0)):]
     reader = csv.DictReader(lines, delimiter=cmap.get("delimiter", ","))
     cols = cmap["columns"]
-    missing = [c for c in cols.values() if c and c not in (reader.fieldnames or [])]
+    missing = [c for spec in cols.values() for c in csv_headers(spec) if c not in (reader.fieldnames or [])]
     if missing:
         raise LedgerError(f"CSV is missing columns {missing}. Columns found: {reader.fieldnames}")
     fmt_in = cmap.get("date_format", "%Y-%m-%d")
     rows = []
     for n, r in enumerate(reader, 1):
-        if not any((v or "").strip() for v in r.values()):
+        if not any((v or "").strip() for v in r.values() if isinstance(v, str)):
             continue
 
         def get(key):
-            return (r.get(cols[key]) or "").strip() if cols.get(key) else ""
+            return csv_cell(r, cols.get(key))
 
         def day(key):
             v = get(key)
@@ -2085,8 +2117,15 @@ def from_csv(data: bytes, book: Book, map_id: str, account: str, start: str, end
             amount = _csv_amount(get("credit"), cmap) - abs(_csv_amount(get("debit"), cmap))
         if cmap.get("invert_sign"):
             amount = -amount
-        if cols.get("currency") and get("currency") and get("currency") != book.currency:
+        if get("currency") and get("currency").upper() != book.currency:
             raise LedgerError(f"CSV row {n}: currency {get('currency')}, ledger is {book.currency}")
+        # The bank's own rate column is ignored: banks print it either way round (Wise: USD per EUR).
+        fx = None
+        orig_cur = get("original_currency").upper()
+        orig = _csv_amount(get("original_amount"), cmap) if orig_cur and orig_cur != book.currency else Decimal(0)
+        if orig and amount:
+            fx = {"amount": format(abs(orig), "f"), "currency": orig_cur,
+                  "rate": format(q(abs(amount) / abs(orig), 8).normalize(), "f")}
         bal = get("balance")
         rows.append({
             "booking_date": day("booking_date"), "value_date": day("value_date"), "amount": format(amount, "f"),
@@ -2094,6 +2133,7 @@ def from_csv(data: bytes, book: Book, map_id: str, account: str, start: str, end
             "iban": norm_iban(get("iban")), "reference": clean_text(get("reference")),
             "bank_id": get("bank_id") or None,
             "balance": format(_csv_amount(bal, cmap), "f") if bal else None,
+            **({"fx": fx} if fx else {}),
         })
     if cmap.get("order") == "desc":
         rows.reverse()
@@ -2122,10 +2162,21 @@ def row_key(account: str, r: dict, prec: int) -> str:
     return sha256_bytes("|".join(parts).encode("utf-8"))[:20]
 
 
+FEE_TEXT = re.compile(r"\bgebuehren?\b|^(?:fees?|spesen|entgelt)\b")
+BANK_CHARGE = re.compile(r"\bcharges? for:", re.I)
+
+
+def is_fee_row(r: dict) -> bool:
+    """A bank's own fee, e.g. Wise "Charges for: CARD-...", even when the merchant column is filled.
+    The colon matters: "Service charge for March" is a supplier's bill."""
+    return bool(BANK_CHARGE.search(clean_text(r.get("text"))) or FEE_TEXT.search(norm_text(r.get("text"))))
+
+
 def vendor_key(r: dict) -> str:
-    if r.get("iban"):
+    fee = is_fee_row(r)
+    if r.get("iban") and not fee:
         return "iban:" + norm_iban(r["iban"])
-    t = NOISE_WORDS.sub(" ", norm_text(r.get("counterparty") or r.get("text")))
+    t = NOISE_WORDS.sub(" ", norm_text(r.get("text") if fee else r.get("counterparty") or r.get("text")))
     words = [w for w in re.sub(r"\b\w*\d\w*\b", " ", t).split() if len(w) > 1][:3]
     return "text:" + (" ".join(words) or "?")
 
@@ -2481,11 +2532,32 @@ def prepare_decisions(book: Book, decisions: dict) -> tuple[Book, str]:
     return extend(work, customs), opens + customs
 
 
-def build_commit(book: Book, pending: dict, decisions: dict | None) -> Book:
+FULL_MATCH_TYPES = {"exact", "skonto", "skonto_unconfirmed", "fx_difference", "batch"}
+
+
+def full_match(book: Book, r: dict, source: dict, doc: dict | None) -> bool:
+    """The row pays the document in full: by the match type `candidates` gave, or by the amounts."""
+    kind = str(source.get("match") or "").split(":", 1)[0]
+    if kind in FULL_MATCH_TYPES:
+        return True
+    if kind == "partial" or not doc or doc["total"] is None:
+        return False
+    if doc["currency"] == book.currency:
+        return abs(dec(r["amount"])) >= doc["total"]
+    fx = r.get("fx") or {}
+    return str(fx.get("currency") or "").upper() == doc["currency"] and abs(dec(fx["amount"])) >= doc["total"]
+
+
+def build_commit(book: Book, pending: dict, decisions: dict | None, documents: dict | None = None) -> Book:
     check_pending(book, pending)
     if pending.get("kind") != "statement":
         raise LedgerError("this pending file holds documents. Use commit-documents")
     decisions = decisions or {}
+    docs = {}
+    for raw in (documents or {}).get("documents") or []:
+        nd = norm_doc(raw, book, need_rate=False)
+        docs[nd["id"]] = nd
+    full_rows = defaultdict(list)
     # Documents `candidates` found in Billpal Review are held by the commit itself, not by the model.
     known = {h["document"] for h in book.holds} | {h.get("document") for h in decisions.get("review_holds") or []}
     auto = [h for h in pending.get("review_holds") or [] if h["document"] not in known
@@ -2527,27 +2599,81 @@ def build_commit(book: Book, pending: dict, decisions: dict | None) -> Book:
             if not source or not source.get("lines"):
                 unresolved.append(f"{r['ref']} {r['booking_date']} {r['amount']} {r.get('counterparty') or r.get('text')}")
                 continue
-            txns.append(statement_txn(work, st, r, source))
+            txns.append(statement_txn(work, st, r, source, docs))
             booked += 1
+            for doc_id in [source["document"]] if source.get("document") else source.get("documents") or []:
+                if full_match(book, r, source, docs.get(doc_id)):
+                    full_rows[doc_id].append(r["ref"])
         end = parse_date(st["to"])
         info = {k: st[k] for k in ("source_id", "account", "kind", "from", "to", "opening", "closing", "count", "extraction")}
         info.update({"booked": booked, "file": st.get("file"), "rows_sha256": st.get("rows_sha256")})
         txns.append(ser_custom(end, "statement", info) + ser_balance(end + timedelta(days=1), acct, dec(st["closing"]), book.currency, book.prec))
     if unresolved:
         raise LedgerError([f"{len(unresolved)} rows have no decision yet:"] + unresolved[:30])
+    in_ledger = book.documents_in_ledger() if book.basis == "cash" else set()
+    # An invoice and its linked receipt are one purchase: a full match of either is a full match of both.
+    kind = lambda x: (docs.get(x) or {}).get("kind")
+    linked_of = lambda x, k: sorted(y for y in (docs.get(x) or {}).get("linked") or [] if kind(y) == k)
+    group, rows_of = defaultdict(set), defaultdict(list)
+    for doc_id in full_rows:
+        key = (linked_of(doc_id, "invoice") or [doc_id])[0] if kind(doc_id) == "receipt" else doc_id
+        group[key] |= {key, doc_id} | (set(linked_of(key, "receipt")) if kind(key) == "invoice" else set())
+        rows_of[key] += full_rows[doc_id]
+    clash = [f"{' / '.join(sorted(group[k]))}: rows {', '.join(v)}" for k, v in rows_of.items() if len(v) > 1]
+    clash += [f"{' / '.join(sorted(group[k]))}: already booked, again on row {v[0]}"
+              for k, v in rows_of.items() if group[k] & in_ledger]
+    if clash:
+        raise LedgerError(["A document is paid in full only once. Keep one row per document, or book the other "
+                           "as a partial payment:"] + clash[:30])
     body += "\n" + "\n".join(txns)
     note = clean_text(decisions.get("note") or f"statements {', '.join(s['source_id'] for s in pending['statements'])}")
     return write_next(book, body, note)
 
 
-def statement_txn(book: Book, st: dict, r: dict, source: dict) -> str:
+def doc_tax(book: Book, doc: dict) -> dict | None:
+    tax = derive_tax(doc, book)
+    if tax and book.basis == "cash" and book.vat_basis_for("purchase") == "invoice":
+        tax = {**tax, "point": doc["date"].isoformat()}
+    return tax
+
+
+def untaxed(book: Book, ln) -> bool:
+    """An income, expense or fixed-asset line without tax: a private share stays untaxed on purpose."""
+    a = ln.get("account") if isinstance(ln, dict) else None
+    return (isinstance(a, str) and ln.get("tax") is None
+            and (a.split(":")[0] in ("Income", "Expenses") or book.role_of(a) == "fixed_asset"))
+
+
+def derived_lines(book: Book, lines, tax: dict | None) -> list:
+    if not tax or not isinstance(lines, list):
+        return lines
+    return [{**ln, "tax": tax} if untaxed(book, ln) else ln for ln in lines]
+
+
+def party_label(party: dict) -> str | None:
+    return party.get("brand_name") or party.get("company_name") or party.get("name")
+
+
+def statement_txn(book: Book, st: dict, r: dict, source: dict, docs: dict | None = None) -> str:
     where = f"row {r['ref']}"
     d = parse_date(r["booking_date"])
     if book.closed_through and d <= book.closed_through:
         raise LedgerError(f"{where}: {d} is in a closed period (through {book.closed_through})")
     amount = dec(r["amount"])
+    lines, payee = source["lines"], source.get("payee")
+    ids = [source["document"]] if source.get("document") else source.get("documents") or []
+    attached = [docs[i] for i in ids if i in (docs or {})]
+    if attached and len(attached) == len(ids):
+        taxes = [doc_tax(book, x) for x in attached]
+        if all(t == taxes[0] for t in taxes):
+            lines = derived_lines(book, lines, taxes[0])
+        elif isinstance(lines, list) and any(untaxed(book, ln) for ln in lines):
+            raise LedgerError(f"{where}: {', '.join(ids)} have different tax treatments. Give tax on each line")
+        names = {party_label(x["party"]) for x in attached}
+        if len(names) == 1:
+            payee = payee or names.pop()
     posts = [Posting(st["account"], amount, book.currency, {})]
-    posts += expand_lines(book, user_tax(source["lines"], source.get("confirmed")), amount, d, where,
+    posts += expand_lines(book, user_tax(lines, source.get("confirmed")), amount, d, where,
                           require_tax=True, cash_rows=True)
     meta = entry_meta({k: source.get(k) for k in ("confirmed", "classified_by", "document", "documents", "no_document",
                                                   "document_review", "meta") if source.get(k) is not None}
@@ -2566,7 +2692,7 @@ def statement_txn(book: Book, st: dict, r: dict, source: dict) -> str:
         raise LedgerError(f"{where}: settles is true or left out")
     if source.get("settles"):
         meta["settles"] = "yes"
-    payee = source.get("payee") or r.get("counterparty") or (r.get("text") or "")[:60]
+    payee = payee or r.get("counterparty") or (r.get("text") or "")[:60]
     narration = source.get("narration") or r.get("text") or ""
     flag = "!" if meta["confirmed"] == "no" else "*"
     return ser_txn(d, flag, payee, narration[:200], meta, posts, book.prec)
@@ -2612,6 +2738,7 @@ def from_billpal(data) -> dict:
                  if b.get("scheme") == "iban"] + contact.get("ibans", [])
         party = {"name": p.get("company_name") or p.get("brand_name"), "iban": next((i for i in ibans if i), None),
                  "personenkonto": contact.get("account_code")}
+        party |= {k: p[k] for k in ("company_name", "brand_name", "country", "tax_id_country") if p.get(k)}
         if p.get("id") and p.get("id") not in contacts:
             notes.append(f"{did}: add get_contact for {party['name']} to read its Personenkonto")
         taxes = [{"type": t.get("tax_type"), "rate": rate(t.get("tax_rate")), "base": m(t.get("tax_base")),
@@ -2668,7 +2795,8 @@ DOC_LINE_DECISION_KEYS = {"index", "account", "tax", "amount_is", "asset"}
 DOC_KINDS = {"invoice", "credit_note", "receipt", "reminder", "other"}
 
 
-def norm_doc(doc: dict, book: Book) -> dict:
+def norm_doc(doc: dict, book: Book, need_rate: bool = True) -> dict:
+    """need_rate=False only where no amount is booked from the document (cash matching and commit)."""
     if not isinstance(doc, dict) or not isinstance(doc.get("id"), str) or not doc["id"]:
         raise LedgerError("each document needs a text id (for Billpal: billpal:<document id>)")
     where = f"document {doc['id']}"
@@ -2692,10 +2820,13 @@ def norm_doc(doc: dict, book: Book) -> dict:
     }
     if cur != book.currency:
         if doc.get("fx_rate") in (None, ""):
-            raise LedgerError(f"{where}: {cur} document needs fx_rate (1 {cur} = x {book.currency})")
-        out["fx_rate"] = dec(doc["fx_rate"], f"{where} fx_rate")
-        if out["fx_rate"] <= 0:
+            if need_rate:
+                raise LedgerError(f"{where}: {cur} document needs fx_rate (1 {cur} = x {book.currency})")
+            out["fx_rate"] = None
+        elif (rate := dec(doc["fx_rate"], f"{where} fx_rate")) <= 0:
             raise LedgerError(f"{where}: fx_rate must be positive")
+        else:
+            out["fx_rate"] = rate
     taxes = []
     for t in doc.get("taxes") or []:
         if not isinstance(t, dict):
@@ -2749,6 +2880,33 @@ def norm_doc(doc: dict, book: Book) -> dict:
             raise LedgerError(f"{where}: needs lines, tax lines with bases, or a total")
     out["lines"] = lines
     return out
+
+
+def derive_tax(doc: dict, book: Book) -> dict | None:
+    """Reverse charge for a bill from a supplier abroad that shows no VAT, from a normalized document.
+    Assumes a service: a goods invoice is rebooked as import or intra_community."""
+    status = book.profile.get("vat_status")
+    if doc["direction"] != "in" or status not in ("regular", "small_business"):
+        return None
+    party = doc.get("party") or {}
+    iso = lambda v: (v or "").strip().upper() if re.fullmatch(r"[A-Za-z]{2}", (v or "").strip()) else None
+    country, id_country = iso(party.get("country")), iso(party.get("tax_id_country"))
+    if party.get("country") and not country:
+        return None
+    id_country = None if id_country == "EU" else id_country
+    if country and id_country and country != id_country:
+        return None
+    supplier = country or id_country
+    if not supplier or supplier == book.profile.get("country"):
+        return None
+    if any(t.get("regime") or (t.get("amount") or 0) > 0 for t in doc["taxes"]):
+        return None
+    if any(isinstance(ln.get("tax"), dict) and ln["tax"].get("regime") for ln in doc["lines"]):
+        return None
+    rate = country_rule(book, doc["date"].year).get("vat_standard")
+    if not rate:
+        return None
+    return {"type": "vat", "regime": "reverse_charge", "rate": rate, "source": "derived", "confirmed": status == "regular"}
 
 
 def find_party_account(book: Book, doc: dict, taken: dict | None = None) -> tuple[str | None, dict | None, str]:
@@ -2826,9 +2984,13 @@ def stage_documents(book: Book, data: dict) -> dict:
             if not sug and ln.get("account_code"):
                 sug = next((a for a, i in book.accounts.items() if i["meta"].get("code") == str(ln["account_code"])), None)
             lines.append({"account": sug, "needs_tax": "tax" not in ln, "amount_is": ln.get("amount_is") or "gross"})
+        derived = derive_tax(d, book) if status in ("new", "review_blocked") else None
+        if derived:
+            original = {**original, "lines": [ln if "tax" in ln else {**ln, "tax": derived} for ln in d["lines"]]}
+            lines = [{**ln, "needs_tax": False} for ln in lines]
         out.append({"ref": d["id"], "status": status, "note": note, "document": original,
                     "suggested": {"party_account": acct or (new_party or {}).get("account"), "new_party": new_party,
-                                  "party_matched_by": how, "lines": lines}})
+                                  "party_matched_by": how, "lines": lines, **({"derived_tax": derived} if derived else {})}})
     return {"schema": "pending/1", "kind": "documents", "ledger_id": book.ledger_id, "ledger_file": book.path.name,
             "ledger_version": book.version, "ledger_sha256": book.sha, "documents": out, "committed_in": None}
 
@@ -3045,7 +3207,8 @@ def doc_links(row: dict, doc: dict) -> list[str]:
     hay = norm_text(" ".join(str(row.get(k) or "") for k in ("text", "counterparty", "reference")))
     flat = re.sub(r"[^a-z0-9]", "", hay)
     links = []
-    words = [w for w in norm_text(doc.get("party_name")).split() if len(w) > 2 and w not in GENERIC_NAME_WORDS]
+    names = " ".join(str(doc.get(k) or "") for k in ("party_name", "company_name", "brand_name"))
+    words = {w for w in norm_text(names).split() if len(w) > 2 and w not in GENERIC_NAME_WORDS}
     if words and any(re.search(rf"\b{re.escape(w)}\b", hay) for w in words):
         links.append("name")
     if doc.get("iban") and norm_iban(doc["iban"]) == norm_iban(row.get("iban")):
@@ -3075,58 +3238,147 @@ def candidate_pool(book: Book, documents: dict | None) -> list[dict]:
             terms = json.loads(origin.meta["terms_json"]) if origin and origin.meta.get("terms_json") else None
             pool.append({
                 "document": it["document"], "kind": (origin.meta.get("document_kind") if origin else None) or "invoice",
-                "pay": it["remaining"], "full": it["amount"], "date": it["date"], "due": opt_date(it["due"] or None),
+                "pay": it["remaining"], "full": it["amount"], "sign": 1 if it["remaining"] > 0 else -1,
+                "date": it["date"], "due": opt_date(it["due"] or None),
                 "number": it["number"], "party_name": meta.get("name") or it["party"], "iban": meta.get("iban"),
-                "terms": terms, "account": it["account"], "fx": False,
+                "terms": terms, "account": it["account"], "fx": False, "currency": book.currency,
             })
+        return pool
     booked = book.documents_in_ledger()
-    for raw in (documents or {}).get("documents") or []:
-        if book.basis == "accrual":
-            break
-        d = norm_doc(raw, book)
-        if d["id"] in booked or d["kind"] == "reminder" or d.get("review_open"):
+    docs = [norm_doc(raw, book, need_rate=False) for raw in (documents or {}).get("documents") or []]
+    kinds = {d["id"]: d["kind"] for d in docs}
+    for d in docs:
+        linked = set(d.get("linked") or [])
+        if (d["id"] in booked or d["kind"] == "reminder" or d.get("review_open") or d["total"] is None
+                or d["kind"] in ("invoice", "receipt") and linked & booked):
             continue
         sign = Decimal(-1 if d["direction"] == "in" else 1) * (-1 if d["kind"] == "credit_note" else 1)
-        if d["total"] is None:
-            continue
-        total = d["total"] if d["currency"] == book.currency else q(d["total"] * d["fx_rate"], book.prec)
+        foreign, party = d["currency"] != book.currency, d["party"]
+        pay = None if foreign and d["fx_rate"] is None else sign * (q(d["total"] * d["fx_rate"], book.prec) if foreign else d["total"])
         pool.append({
-            "document": d["id"], "kind": d["kind"], "pay": sign * total, "full": sign * total, "date": d["date"],
-            "due": d["due_date"], "number": d.get("number"), "party_name": d["party"].get("name"),
-            "iban": d["party"].get("iban"), "terms": d.get("terms"), "account": None,
-            "fx": d["currency"] != book.currency,
+            "document": d["id"], "kind": d["kind"], "pay": pay, "full": pay, "sign": sign, "date": d["date"],
+            "due": d["due_date"], "number": d.get("number"), "party_name": party.get("name"),
+            "company_name": party.get("company_name"), "brand_name": party.get("brand_name"),
+            "iban": party.get("iban"), "terms": d.get("terms"), "account": None, "fx": foreign,
+            "currency": d["currency"], "original_total": d["total"],
+            "receipts": sorted(x for x in linked if kinds.get(x) == "receipt") if d["kind"] != "receipt" else [],
+            "invoices": sorted(x for x in linked if kinds.get(x) == "invoice") if d["kind"] == "receipt" else [],
+            "derived_tax": derive_tax(d, book),
         })
     return pool
 
 
-def explain(kind: str, row_amt: Decimal, docs: list[dict], links: list[str], d: date, prec: int) -> str:
+def explain(kind: str, paid: str, docs: list[dict], links: list[str], d: date) -> str:
     days = (d - docs[0]["date"]).days
     when = f"{abs(days)} days {'after' if days >= 0 else 'before'} the document"
     nums = ", ".join(x.get("number") or x["document"] for x in docs)
-    return f"{kind}: payment {fmt(abs(row_amt), prec)} for {nums}; links: {', '.join(links) or 'none'}; {when}"
+    return f"{kind}: payment {paid} for {nums}; links: {', '.join(links) or 'none'}; {when}"
+
+
+PAIR_MAX = 4
+PAIR_TIE_DAYS = 1
+
+
+def pair_exact(rows: list[dict], dates: dict) -> None:
+    """Pair same-amount payments and documents as a whole, by the least total date gap. Walking the rows
+    by date and taking the closest free document steals: invoices 1 and 5 Jan, payments 4 and 6 Jan."""
+    exact = {o["ref"]: [f for f in o["candidates"] if f["type"] == "exact"] for o in rows}
+    by_doc, when = defaultdict(set), {o["ref"]: parse_date(o["date"]) for o in rows}
+    for ref, fs in exact.items():
+        for f in fs:
+            by_doc[f["documents"][0]].add(ref)
+    seen = set()
+    for start in exact:
+        if start in seen or not exact[start]:
+            continue
+        refs, docs, stack = set(), set(), [start]
+        while stack:
+            ref = stack.pop()
+            if ref not in refs:
+                refs.add(ref)
+                for f in exact[ref]:
+                    docs.add(f["documents"][0])
+                    stack.extend(by_doc[f["documents"][0]])
+        seen |= refs
+        if len(refs) == 1 and len(docs) == 1:
+            continue
+        refs = sorted(refs)
+        if len(refs) > PAIR_MAX or len(docs) > PAIR_MAX:
+            for ref in refs:
+                for f in exact[ref]:
+                    f["needs_user"] = True
+            continue
+        scored = []
+        for pick in product(*[exact[ref] + [None] for ref in refs]):
+            used = [f["documents"][0] for f in pick if f]
+            if len(used) == len(set(used)):
+                gap = sum(abs((when[ref] - dates[f["documents"][0]]).days) for ref, f in zip(refs, pick) if f)
+                scored.append((-len(used), gap, pick))
+        scored.sort(key=lambda s: s[:2])
+        best = scored[0]
+        tie = len(scored) > 1 and scored[1][0] == best[0] and scored[1][1] - best[1] <= PAIR_TIE_DAYS
+        for o in rows:
+            if o["ref"] not in refs:
+                continue
+            f = best[2][refs.index(o["ref"])]
+            if tie:
+                for g in exact[o["ref"]]:
+                    g["needs_user"] = True
+                continue
+            o["candidates"] = [g for g in o["candidates"] if g["type"] != "exact" or g is f]
+            if f:
+                f["needs_user"] = False
 
 
 def candidates(book: Book, pending: dict, documents: dict | None) -> dict:
     if pending.get("kind") != "statement":
         raise LedgerError("candidates works on a staged statement")
     pool = candidate_pool(book, documents)
-    unit = Decimal(1).scaleb(-book.prec)
     out = []
     for st in pending["statements"]:
         for r in st["rows"]:
             if r["status"] not in ("new", "ambiguous"):
                 continue
-            amt, d = dec(r["amount"]), parse_date(r["booking_date"])
-            found, too_many = [], False
-            linked = []
-            for doc in pool:
-                if (doc["pay"] > 0) != (amt > 0) or not in_window(d, doc):
+            amt, d, fee = dec(r["amount"]), parse_date(r["booking_date"]), is_fee_row(r)
+            # Paid amounts by currency: the ledger amount, plus the original one on a foreign card payment.
+            got_by = {book.currency: abs(amt)}
+            fx = r.get("fx") or {}
+            if fx.get("currency") and fx.get("amount") not in (None, ""):
+                got_by[str(fx["currency"]).upper()] = abs(dec(fx["amount"]))
+            found, too_many, linked = [], False, []
+
+            def hit(kind, docs, links, needs_user, want, got, cur):
+                prec = book.prec if cur == book.currency else precision_for(cur)
+                paid = fmt(got, prec) + ("" if cur == book.currency else f" {cur}")
+                f = {"type": kind, "documents": [x["document"] for x in docs], "needs_user": needs_user,
+                     "open_amount": fmt(want, prec), "difference": fmt(want - got, prec),
+                     "explanation": explain(kind, paid, docs, links, d)}
+                if cur != book.currency:
+                    f["currency"] = cur
+                receipts = [x for doc in docs for x in doc.get("receipts") or []]
+                if receipts:
+                    f["linked_receipts"] = receipts
+                if len(docs) == 1 and docs[0].get("derived_tax"):
+                    f["derived_tax"] = docs[0]["derived_tax"]
+                return f
+
+            for doc in [] if fee else pool:
+                if (doc["sign"] > 0) != (amt > 0) or not in_window(d, doc):
+                    continue
+                if doc["currency"] != book.currency and doc["currency"] in got_by:
+                    cur, want = doc["currency"], abs(doc["original_total"])
+                elif doc["pay"] is not None:
+                    cur, want = book.currency, abs(doc["pay"])
+                else:
                     continue
                 links = doc_links(r, doc)
-                if not links:
+                if not links or not want:
                     continue
-                linked.append((doc, links))
-                want, got = abs(doc["pay"]), abs(amt)
+                linked.append((doc, links, cur, want))
+                got = got_by[cur]
+                prec = book.prec if cur == book.currency else precision_for(cur)
+                unit = Decimal(1).scaleb(-prec)
+                fx_gap = doc["fx"] and cur == book.currency
                 kind, needs_user = None, True
                 if got == want:
                     kind, needs_user = "exact", False
@@ -3134,46 +3386,46 @@ def candidates(book: Book, pending: dict, documents: dict | None) -> dict:
                     terms = doc.get("terms") or {}
                     pct = dec(terms["skonto_percent"]) if terms.get("skonto_percent") is not None else None
                     in_time = terms.get("skonto_days") is not None and d <= doc["date"] + timedelta(days=int(terms["skonto_days"]))
-                    if pct is not None and pct <= 3 and abs(q(want * (1 - pct / 100), book.prec) - got) <= unit and in_time:
+                    if pct is not None and pct <= 3 and abs(q(want * (1 - pct / 100), prec) - got) <= unit and in_time:
                         kind, needs_user = "skonto", False
                     elif (want - got) / want <= Decimal("0.03"):
-                        kind = "fx_difference" if doc["fx"] else "skonto_unconfirmed"
+                        kind = "fx_difference" if fx_gap else "skonto_unconfirmed"
                     else:
                         kind = "partial"
-                elif doc["fx"] and (got - want) / want <= Decimal("0.03"):
+                elif fx_gap and (got - want) / want <= Decimal("0.03"):
                     kind = "fx_difference"
                 if kind:
-                    found.append({"type": kind, "documents": [doc["document"]], "needs_user": needs_user,
-                                  "open_amount": fmt(want, book.prec), "difference": fmt(want - got, book.prec),
-                                  "explanation": explain(kind, amt, [doc], links, d, book.prec)})
+                    found.append(hit(kind, [doc], links, needs_user, want, got, cur))
+            # A receipt counts as its invoice where the invoice is offered too; elsewhere (outside the
+            # invoice's window, or the invoice in review) the receipt is offered on its own.
+            offered = {x[0]["document"] for x in linked}
+            drop = {x[0]["document"] for x in linked if set(x[0].get("invoices") or []) & offered}
+            linked = [x for x in linked if x[0]["document"] not in drop]
+            found = [f for f in found if f["documents"][0] not in drop]
             if not any(f["type"] == "exact" for f in found) and len(linked) >= 2:
                 if len(linked) > BATCH_POOL_CAP:
                     too_many = True
                 else:
                     hits = []
-                    vals = [(doc, links, abs(doc["pay"])) for doc, links in linked]
-                    for size in range(2, min(BATCH_MAX_SIZE, len(vals)) + 1):
-                        for combo in combinations(vals, size):
-                            if sum((v[2] for v in combo), Decimal(0)) == abs(amt):
-                                hits.append(combo)
-                                if len(hits) > 5:
-                                    break
-                        if len(hits) > 5:
-                            break
-                    for combo in hits[:5]:
-                        docs = [c[0] for c in combo]
+                    for cur in sorted({x[2] for x in linked}):
+                        vals = [x for x in linked if x[2] == cur]
+                        for size in range(2, min(BATCH_MAX_SIZE, len(vals)) + 1):
+                            for combo in combinations(vals, size):
+                                if sum((v[3] for v in combo), Decimal(0)) == got_by[cur]:
+                                    hits.append((cur, combo))
+                                    if len(hits) > 5:
+                                        break
+                            if len(hits) > 5:
+                                break
+                    for cur, combo in hits[:5]:
                         links = sorted({l for c in combo for l in c[1]})
-                        found.append({"type": "batch", "documents": [x["document"] for x in docs], "needs_user": len(hits) > 1,
-                                      "open_amount": fmt(abs(amt), book.prec), "difference": "0",
-                                      "explanation": explain("batch", amt, docs, links, d, book.prec)})
+                        found.append(hit("batch", [c[0] for c in combo], links, len(hits) > 1, got_by[cur], got_by[cur], cur))
             order = {"exact": 0, "skonto": 1, "batch": 2, "skonto_unconfirmed": 3, "fx_difference": 4, "partial": 5}
             found.sort(key=lambda f: (order[f["type"]], f["explanation"]))
-            exact = [f for f in found if f["type"] == "exact"]
-            if len(exact) > 1:
-                for f in exact:
-                    f["needs_user"] = True
             out.append({"ref": r["ref"], "date": r["booking_date"], "amount": r["amount"],
-                        "text": r.get("counterparty") or r.get("text"), "candidates": found, "too_many_candidates": too_many})
+                        "text": r.get("counterparty") or r.get("text"), "candidates": found, "too_many_candidates": too_many,
+                        **({"bank_fee": True} if fee else {})})
+    pair_exact(out, {doc["document"]: doc["date"] for doc in pool})
     held = [] if book.basis == "accrual" else [
         {"document": d.get("id"), "date": d.get("date"), "total": d.get("total"), "party": (d.get("party") or {}).get("name")}
         for d in (documents or {}).get("documents") or [] if d.get("review_open") and d.get("id") not in book.documents_in_ledger()]
@@ -3595,7 +3847,8 @@ def build_report(book: Book, start: date, end: date, by: str, lang: str) -> dict
                             "tax_type": p.meta.get("tax_type", ""), "tax_regime": p.meta.get("tax_regime", ""),
                             "tax_rate": p.meta.get("tax_rate", ""),
                             "tax_point": p.meta.get("tax_point", ""),
-                            "document": p.meta.get("document") or t.meta.get("document", ""),
+                            "document": p.meta.get("document") or t.meta.get("document")
+                            or ", ".join(json.loads(t.meta.get("documents_json") or "[]")),
                             "confirmed": t.meta.get("confirmed", "")})
     return {
         "meta": {"title": book.options.get("title", ""), "currency": book.currency, "from": start.isoformat(),
@@ -3606,7 +3859,9 @@ def build_report(book: Book, start: date, end: date, by: str, lang: str) -> dict
                  "fails": [f"{f['code']}: {f['message']}" + (f" ({f['count']})" if f["count"] else "") for f in rep["fails"]],
                  "warnings": [f"{w['code']}: {w['message']}" + (f" ({w['count']})" if w["count"] else "")
                               for w in rep["warnings"] if w["code"] != "missing_receipts"],
-                 "reconciled": reconciled, "result": result, "fiscal_year_result": fy_result},
+                 "reconciled": reconciled, "result": result, "fiscal_year_result": fy_result,
+                 "missing_receipts_count": rep["missing_receipts_count"]},
+        "missing_receipts_by_party": rep["missing_receipts_by_party"],
         "trial_balance": tb, "trial_totals": sums, "pnl": pnl,
         "balance_sheet": {**{k.lower(): v for k, v in bs.items()}, "assets_total": assets_total,
                           "liabilities_total": liab_total, "equity_total": eq_total, "result": fy_result},
@@ -3781,6 +4036,7 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("ledger")
     p.add_argument("pending")
     p.add_argument("--decisions")
+    p.add_argument("--documents", help="the documents file candidates read: derives reverse charge and payees")
     p = sub.add_parser("stage-documents", help="accrual books: stage invoices and credit notes")
     p.add_argument("ledger")
     p.add_argument("documents")
@@ -3893,7 +4149,10 @@ def run(args) -> dict:
     if args.cmd in ("commit", "commit-documents"):
         pending = load_json(args.pending)
         decisions = load_json(args.decisions) if args.decisions else None
-        nb = (build_commit if args.cmd == "commit" else build_commit_documents)(book, pending, decisions)
+        if args.cmd == "commit":
+            nb = build_commit(book, pending, decisions, load_json(args.documents) if args.documents else None)
+        else:
+            nb = build_commit_documents(book, pending, decisions)
         pending["committed_in"] = nb.path.name
         Path(args.pending).write_text(json.dumps(pending, ensure_ascii=False, indent=1, default=_json_default), encoding="utf-8")
         return {"written": str(nb.path), "version": nb.version, "transactions": len(nb.txns) - len(book.txns)}
@@ -3939,7 +4198,9 @@ def run(args) -> dict:
         written = write_report(data, Path(args.out_dir), formats, delimiter, decimal, bom)
         m = data["meta"]
         return {"written": written, "out_dir": args.out_dir, "reconciled": m["reconciled"], "ready": m["ready"],
-                "fails": m["fails"], "result": m["result"], "period": [m["from"], m["to"]]}
+                "fails": m["fails"], "result": m["result"], "period": [m["from"], m["to"]],
+                "missing_receipts_count": m["missing_receipts_count"],
+                "missing_receipts_by_party": data["missing_receipts_by_party"]}
     raise LedgerError(f"unknown command {args.cmd}")
 
 
