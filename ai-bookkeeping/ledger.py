@@ -1448,6 +1448,9 @@ def build_init(spec: dict, out_dir: Path) -> Book:
     extra = set(spec) - INIT_KEYS
     if extra:
         raise LedgerError(f"init: unknown fields {sorted(extra)}")
+    extra = set(spec.get("opening") or {}) - {"lines", "suspense_confirmed"}
+    if extra:
+        raise LedgerError(f"init opening: unknown fields {sorted(extra)} (new_business belongs at the top level)")
     lg_in = spec.get("ledger") or {}
     cur = lg_in.get("currency")
     if not isinstance(cur, str) or not re.fullmatch(r"[A-Z]{3}", cur):
@@ -2017,7 +2020,8 @@ def readiness(book: Book, through: date | None, year_end: bool = False, folder: 
 
 
 REVIEW_CODES = {"double_charge", "price_increase", "above_asset_limit", "contractors_1099"}
-ASSETISH = re.compile(r"Equipment|Hardware|Computer|Office|Supplies|Materials|Tools|Furniture|Software|Other")
+# Software is left out: subscriptions are never assets, and bought software is rare enough for the accountant.
+ASSETISH = re.compile(r"Equipment|Hardware|Computer|Office|Supplies|Materials|Tools|Furniture|Other")
 
 
 def review_flags(book: Book, scope: list) -> list[tuple[str, str, list]]:
@@ -2056,8 +2060,10 @@ def review_flags(book: Book, scope: list) -> list[tuple[str, str, list]]:
         floor = Decimal(2000 if book.fy_from.year >= 2026 else 600)
         paid = defaultdict(Decimal)
         for t, key, amount, role in pays:
-            if role in ("bank", "cash") and any(account_attr(book, p.account, "tax_line") == "11" or "Contractors" in p.account
-                                                for p in t.postings):
+            # a debit card pays from the bank account too, but card payments go on 1099-K
+            card = CARD_TEXT.search(norm_text(f"{t.narration} {t.meta.get('counterparty', '')}"))
+            if role in ("bank", "cash") and not card and any(
+                    account_attr(book, p.account, "tax_line") == "11" or "Contractors" in p.account for p in t.postings):
                 paid[t.payee] += amount
         out.append(("contractors_1099", f"Contractors paid {floor} USD or more by bank transfer or check: 1099-NEC "
                                         "candidates (ask for a W-9; card and PayPal payments are reported on 1099-K)",

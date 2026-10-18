@@ -213,7 +213,7 @@ qbo,Expenses:Education,,,Education & Training,Fortbildungskosten,,,,,27b
 qbo,Expenses:Legal-Accounting,,,Legal & Accounting,Rechts- und Beratungskosten,,,,,17
 qbo,Expenses:Taxes-Licenses,,,Taxes & Licenses,Steuern und Gebühren,,,,,23
 qbo,Expenses:Small-Equipment,,,Computer & Small Equipment,Computer und Kleingeräte,,,,,22
-qbo,Expenses:Software,,,Software & Subscriptions,Software und Lizenzen,,
+qbo,Expenses:Software,,,Software & Subscriptions,Software und Lizenzen,,,,,27b
 qbo,Expenses:Postage,,,Shipping & Delivery,Porto und Versand,,,,,18
 qbo,Expenses:Insurance,,,Insurance,Versicherungen,,,,,15
 qbo,Expenses:Meals,,,Meals,Bewirtungskosten,,,,,24b

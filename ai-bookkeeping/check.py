@@ -453,6 +453,8 @@ def book_b(tmp: Path) -> None:
             "suspense_confirmed": True},
     }
     fails("opening", "init", put(f / "bad-init.json", {**init, "opening": {"lines": init["opening"]["lines"]}}), "--out-dir", f)
+    fails("new_business belongs at the top level", "init", put(f / "bad-init.json", {**init, "opening": {"new_business": True}}),
+          "--out-dir", f)
     ok("init", put(f / "init.json", init), "--out-dir", f)
     v1 = f / "fy2026-v1.beancount"
     b1 = ledger.Book.load(v1)
@@ -1799,9 +1801,8 @@ def book_k(tmp: Path) -> None:
     ub = ledger.Book.load(latest(u, "u"))
     form = ledger.build_report(ub, ub.fy_from, ub.fy_to, "none", "en")["tax_form"]
     assert form["form"] == "Schedule C" and [(r["line"], r["amount"]) for r in form["lines"]] == [
-        ("1", D("1000.00")), ("11", D("200.00")), ("24b", D("50.00"))], form
-    assert form["lines"][1]["name"] == "Contract labor"
-    assert [i["account"] for i in form["unmapped"]] == ["Expenses:Software"]
+        ("1", D("1000.00")), ("11", D("200.00")), ("24b", D("50.00")), ("27b", D("50.00"))], form
+    assert form["lines"][1]["name"] == "Contract labor" and not form["unmapped"], form
     assert [(i["account"], i["amount"]) for i in form["not_deductible"]] == [("Expenses:Meals:Nondeductible", D("50.00"))]
     # a supplier account books under its Personenkonto, the number Billpal's contacts export carries
     ok("journal", latest(f, "k"), put(f / "ap.json", {"schema": "journal/1",
@@ -1845,6 +1846,7 @@ def book_l(tmp: Path) -> None:
     assert warns["double_charge"]["items"] == ["2026-03-20 and 2026-03-21: Staples 59.50"], warns["double_charge"]
     assert warns["price_increase"]["items"] == ["Notion: 11.90 to 14.28 EUR on 2026-03-15"], warns["price_increase"]
     assert warns["above_asset_limit"]["count"] == 1 and "Apple" in warns["above_asset_limit"]["items"][0]
+    assert not ledger.ASSETISH.search("Expenses:Software"), "a yearly subscription is not an asset"
     assert warns["open_questions"]["items"] == ["laptop: Is the Apple purchase a laptop?"]
     # Q1: 190.00 VAT on sales less 310.08 input VAT is a refund of 120.08, due on Friday 10 April
     q1 = ledger.vat_schedule(b, b.fy_from, b.fy_to)["totals"][0]
@@ -1874,10 +1876,12 @@ def book_l(tmp: Path) -> None:
     assert [u["document"] for u in unpaid] == ["billpal:unpaid"] and unpaid[0]["total"] == "49.00", unpaid
 
     # US: contractors paid by bank at or above the 1099-NEC floor
-    pay = lambda d, amount: {"date": d, "payee": "Jane Dev", "confirmed": "user", "no_document": "test",
-                             "lines": [{"account": "Assets:Bank:Checking", "amount": amount}, {"account": "Expenses:Contractors"}]}
+    pay = lambda d, amount, text="": {"date": d, "payee": "Jane Dev", "confirmed": "user", "no_document": "test", "narration": text,
+                                      "lines": [{"account": "Assets:Bank:Checking", "amount": amount}, {"account": "Expenses:Contractors"}]}
+    # the debit card payment comes from the checking account too, but goes on 1099-K
     ok("journal", latest(tmp / "c", "acme-2026"), put(f / "us.json", {"schema": "journal/1", "entries": [
-        pay("2026-03-01", "-1500.00"), pay("2026-04-01", "-600.00")]}))
+        pay("2026-03-01", "-1500.00"), pay("2026-04-01", "-600.00"),
+        pay("2026-05-01", "-900.00", "PURCHASE AUTHORIZED ON 04/30 JANE DEV DESIGN CARD 1234")]}))
     u = ledger.Book.load(latest(tmp / "c", "acme-2026"))
     flags = {c: items for c, _, items in ledger.review_flags(u, u.live_txns())}
     assert flags["contractors_1099"] == ["Jane Dev: 2100.00"], flags
