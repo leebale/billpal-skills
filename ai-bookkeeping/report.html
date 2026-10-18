@@ -23,9 +23,11 @@
   th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
   th { font-size: 12px; color: var(--muted); font-weight: 600; background: var(--soft); position: sticky; top: 0; }
   td.n, th.n { text-align: right; white-space: nowrap; }
+  td:first-child { white-space: nowrap; }
   tr.total td { font-weight: 600; border-top: 2px solid var(--fg); }
   .wrap { overflow-x: auto; }
   .empty { color: var(--muted); font-style: italic; }
+  td a { color: inherit; text-underline-offset: 2px; }
   .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin: 16px 0; }
   .kpi { border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; }
   .kpi b { display: block; font-size: 20px; margin-top: 2px; }
@@ -35,6 +37,9 @@
   summary { cursor: pointer; display: flex; justify-content: space-between; gap: 12px; padding: 6px 8px; }
   summary b { font-weight: 600; white-space: nowrap; font-variant-numeric: tabular-nums; }
   summary span.muted { color: var(--muted); font-weight: 400; }
+  .filters { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 12px; }
+  .filters input, .filters select { font: inherit; border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; }
+  .filters input { flex: 1; min-width: 200px; }
   footer { margin-top: 48px; color: var(--muted); font-size: 12px; }
   @media print { nav { display: none; } details > * { display: block; } h2 { break-before: auto; } th { position: static; } main { padding: 0; } }
 </style>
@@ -63,9 +68,15 @@
     source: "Erstellt aus", resultYear: "Ergebnis des Geschäftsjahres", taxes: "Steuern", taxType: "Steuer",
     taxGeneric: "Steuer", types: { vat: "USt", gst: "GST", sales_tax: "Sales Tax", other: "Andere" },
     drill: "Konten im Detail", bookings: "Buchungen", text: "Text", document: "Beleg", byParty: "Nach Partner",
-    firstBookings: "Einzelne Buchungen", firstOf: "die ersten 50 von",
+    firstBookings: "Einzelne Buchungen", jurisdiction: "Steuergebiet", useTax: "Use Tax",
     regimes: { standard: "Normal", reverse_charge: "Reverse Charge", intra_community: "Innergemeinschaftlich",
-      exempt: "Steuerfrei", zero: "Nullsatz", export: "Ausfuhr", out_of_scope: "Nicht steuerbar", import: "Einfuhr" }
+      exempt: "Steuerfrei", zero: "Nullsatz", export: "Ausfuhr", out_of_scope: "Nicht steuerbar", import: "Einfuhr" },
+    search: "Buchungen", searchHint: "Suchen: Partner, Text, Betrag, Konto", allAccounts: "Alle Konten",
+    shown: function (n, all) { return n + " von " + all + " Buchungszeilen"; },
+    more: function (n) { return "und " + n + " weitere, in journal.csv oder über die Suche"; },
+    taxForm: "Steuerformular (Entwurf)", draft: "Entwurf für die Steuerberatung, keine Steuererklärung.",
+    line: m.country === "AT" ? "Kennzahl" : "Zeile", unmapped: "Konten ohne Zeile, die ordnet die Steuerberatung zu",
+    notDeductible: "Nicht abzugsfähig"
   } : {
     title: "Books", period: "Period", ready: "Ready for your accountant", notReady: "Not ready yet",
     reconciled: "Totals reconcile", notReconciled: "Totals do not reconcile", pnl: "Profit and loss",
@@ -81,16 +92,23 @@
     source: "Built from", resultYear: "Result for the fiscal year", taxes: "Taxes", taxType: "Tax",
     taxGeneric: "Tax collected", types: { vat: "VAT", gst: "GST", sales_tax: "Sales tax", other: "Other" },
     drill: "Accounts in detail", bookings: "bookings", text: "Description", document: "Document", byParty: "By party",
-    firstBookings: "Single bookings", firstOf: "the first 50 of",
+    firstBookings: "Single bookings", jurisdiction: "Jurisdiction", useTax: "Use tax",
     regimes: { standard: "Standard", reverse_charge: "Reverse charge", intra_community: "Intra-EU", exempt: "Exempt",
-      zero: "Zero-rated", export: "Export", out_of_scope: "Out of scope", import: "Import" }
+      zero: "Zero-rated", export: "Export", out_of_scope: "Out of scope", import: "Import" },
+    search: "Bookings", searchHint: "Search: party, text, amount, account", allAccounts: "All accounts",
+    shown: function (n, all) { return n + " of " + all + " booking lines"; },
+    more: function (n) { return "and " + n + " more, in journal.csv or through the search"; },
+    taxForm: "Tax form (draft)", draft: "A draft for your accountant, not a filing.",
+    line: "Line", unmapped: "Accounts without a line, your accountant assigns them", notDeductible: "Not deductible"
   };
   var locale = de ? (m.country === "AT" ? "de-AT" : "de-DE") : "en-GB";
   var digits = typeof m.precision === "number" ? m.precision : 2;
   var nf = new Intl.NumberFormat(locale, { minimumFractionDigits: digits, maximumFractionDigits: digits });
   var vatOnly = (data.vat.types || []).every(function (t) { return t === "vat"; });
-  var vatTitle = vatOnly ? L.vat : L.taxes;
-  function num(v) { return v === null || v === undefined || v === "" ? "" : nf.format(Number(v)); }
+  var salesOnly = (data.vat.types || []).length > 0 && data.vat.types.every(function (t) { return t === "sales_tax"; });
+  var vatTitle = vatOnly ? L.vat : salesOnly ? L.types.sales_tax : L.taxes;
+  var withJur = data.vat.lines.some(function (r) { return r.jurisdiction; });
+  function num(v) { return v === null || v === undefined || v === "" ? "" : nf.format(Number(v) || 0); }
   function el(tag, attrs, text) {
     var e = document.createElement(tag);
     if (attrs) { for (var k in attrs) { if (k === "class") e.className = attrs[k]; else e.setAttribute(k, attrs[k]); } }
@@ -106,7 +124,10 @@
     var tb = el("tbody");
     rows.concat(totalRow ? [totalRow] : []).forEach(function (r, ri) {
       var row = el("tr", totalRow && ri === rows.length ? { class: "total" } : null);
-      r.forEach(function (c, i) { row.appendChild(el("td", numeric[i] ? { class: "n" } : null, numeric[i] ? num(c) : c)); });
+      r.forEach(function (c, i) {
+        if (c instanceof Node) { var td = el("td"); td.appendChild(c); row.appendChild(td); return; }
+        row.appendChild(el("td", numeric[i] ? { class: "n" } : null, numeric[i] ? num(c) : c));
+      });
       tb.appendChild(row);
     });
     t.appendChild(tb); wrap.appendChild(t); return wrap;
@@ -116,8 +137,34 @@
     nav.appendChild(el("a", { href: "#" + id }, title));
     return s;
   }
-  function plain(line) { return String(line).replace(/^[a-z_]+: /, ""); }
+  function plain(line) { return String(line).replace(/^[a-z0-9_]+: /, ""); }
+  function docCell(id, url) {
+    if (!url || !/^https?:\/\//.test(url)) return id;
+    return el("a", { href: url, target: "_blank", rel: "noopener noreferrer" }, id || url);
+  }
   function sum(rows, f) { return rows.reduce(function (a, r) { return a + Number(f(r) || 0); }, 0); }
+  function periodOf(d, by) {
+    return by === "month" ? d.slice(0, 7) : by === "quarter" ? d.slice(0, 4) + "-Q" + (Math.floor((Number(d.slice(5, 7)) - 1) / 3) + 1) : d.slice(0, 4);
+  }
+  var LIMIT = 200;
+  function lines(rows, sign) {
+    var box = el("div");
+    box.appendChild(table([L.date, L.party, L.text, L.document, L.amount], rows.slice(0, LIMIT).map(function (j) {
+      return [j.date, j.payee, j.narration, docCell(j.document, j.document_url), sign * Number(j.amount)];
+    }), [false, false, false, false, true]));
+    if (rows.length > LIMIT) box.appendChild(el("p", { class: "empty" }, L.more(rows.length - LIMIT)));
+    return box;
+  }
+  function drill(label, amount, rows, sign) {
+    var d = el("details"), sm = el("summary");
+    sm.appendChild(el("span", null, label)); sm.appendChild(el("b", null, num(amount))); d.appendChild(sm);
+    d.addEventListener("toggle", function once() {
+      if (d.open && d.childNodes.length === 1) d.appendChild(lines(rows, sign));
+    });
+    return d;
+  }
+  var byAcct = {};
+  data.journal.forEach(function (j) { (byAcct[j.account] = byAcct[j.account] || []).push(j); });
 
   var app = document.getElementById("app");
   var cash = m.basis === "cash";
@@ -152,12 +199,25 @@
   });
   app.appendChild(kpis);
 
-  var cols = m.columns;
+  var cols = m.columns, quarters = [];
+  if (cols.length === 1) {
+    for (var dq = new Date(m.from + "T00:00:00Z"); dq.toISOString().slice(0, 10) <= m.to; dq.setUTCMonth(dq.getUTCMonth() + 1)) {
+      var qk = periodOf(dq.toISOString().slice(0, 10), "quarter");
+      if (quarters.indexOf(qk) < 0) quarters.push(qk);
+    }
+    if (quarters.length > 1) cols = quarters; else quarters = [];
+  }
+  function values(r) {
+    if (!quarters.length) return r.values;
+    return quarters.map(function (qk) {
+      return -sum((byAcct[r.account] || []).filter(function (j) { return periodOf(j.date, "quarter") === qk; }), function (j) { return j.amount; });
+    });
+  }
   var s = section("pnl", cash ? L.pnlCash : L.pnl);
   [[L.income, income, 1], [L.expenses, expenses, -1]].forEach(function (g) {
     s.appendChild(el("h3", null, g[0]));
     var rows = g[1].map(function (r) {
-      return [r.code, r.name].concat(r.values.map(function (v) { return g[2] * Number(v); })).concat([g[2] * Number(r.total)]);
+      return [r.code, r.name].concat(values(r).map(function (v) { return g[2] * Number(v); })).concat([g[2] * Number(r.total)]);
     });
     var head = [L.code, L.name].concat(cols.length > 1 ? cols : []).concat([L.total]);
     var numeric = [false, false].concat(cols.length > 1 ? cols.map(function () { return true; }) : []).concat([true]);
@@ -169,14 +229,12 @@
   if (data.pnl.length) {
     // One row per booking under each account, with only that account's postings: the bank leg never adds in.
     s = section("drill", L.drill);
-    var byAcct = {};
-    data.journal.forEach(function (j) { (byAcct[j.account] = byAcct[j.account] || []).push(j); });
     data.pnl.forEach(function (r) {
       var sign = r.group === "Income" ? -1 : 1, payees = {}, total = 0;
       (byAcct[r.account] || []).forEach(function (j) {
         var p = payees[j.payee] = payees[j.payee] || { name: j.payee, total: 0, txns: {}, order: [] };
         var key = j.txn_id || j.date + "|" + j.narration;
-        if (!p.txns[key]) { p.txns[key] = { date: j.date, text: j.narration, document: j.document, amount: 0 }; p.order.push(key); }
+        if (!p.txns[key]) { p.txns[key] = { date: j.date, text: j.narration, document: j.document, url: j.document_url, amount: 0 }; p.order.push(key); }
         p.txns[key].amount += sign * Number(j.amount); p.total += sign * Number(j.amount); total += sign * Number(j.amount);
       });
       var acct = el("details"), head = el("summary");
@@ -189,7 +247,7 @@
           label.appendChild(el("span", { class: "muted" }, " · " + p.order.length + " " + L.bookings));
           sm.appendChild(label); sm.appendChild(el("b", null, num(p.total))); d.appendChild(sm);
           d.appendChild(table([L.date, L.text, L.document, L.amount], p.order.map(function (k) {
-            var t = p.txns[k]; return [t.date, t.text, t.document, t.amount];
+            var t = p.txns[k]; return [t.date, t.text, docCell(t.document, t.url), t.amount];
           }), [false, false, false, true]));
           acct.appendChild(d);
         });
@@ -202,21 +260,38 @@
   [[L.assetsSide, bs.assets, bs.assets_total], [L.liabilities, bs.liabilities, bs.liabilities_total],
    [L.equity, bs.equity, bs.equity_total]].forEach(function (g) {
     s.appendChild(el("h3", null, g[0]));
-    s.appendChild(table([L.code, L.name, L.amount], g[1].map(function (r) { return [r.code, r.name, r.amount]; }),
-      [false, false, true], [L.total, "", g[2]]));
+    var sign = g[1] === bs.assets ? 1 : -1;
+    if (!g[1].length) s.appendChild(el("p", { class: "empty" }, L.none));
+    g[1].forEach(function (r) {
+      s.appendChild(drill([r.code, r.name].filter(Boolean).join(" "), r.amount, byAcct[r.account] || [], sign));
+    });
+    var tot = el("div", { class: "wrap" }), tt = el("table"), tr = el("tr", { class: "total" });
+    tr.appendChild(el("td", null, L.total)); tr.appendChild(el("td", { class: "n" }, num(g[2])));
+    tt.appendChild(tr); tot.appendChild(tt); s.appendChild(tot);
   });
   s.appendChild(el("p", null, L.resultYear + ": " + num(bs.result)));
 
   function typeName(t) { return L.types[t] || t; }
+  function regimeName(r) { return r.type === "sales_tax" && r.regime === "reverse_charge" ? L.useTax : L.regimes[r.regime] || r.regime; }
+  function jur(cells, r) { return withJur ? cells.slice(0, 2).concat([r.jurisdiction || ""], cells.slice(2)) : cells; }
+  function jurFlags(flags) { return withJur ? flags.slice(0, 2).concat([false], flags.slice(2)) : flags; }
   if (data.vat.lines.length || data.vat.totals.length) {
     s = section("vat", vatTitle);
     s.appendChild(el("p", { class: "sub" }, L.notFiling));
-    s.appendChild(table([L.period, L.taxType, L.direction, L.regime, L.rate, L.base, vatOnly ? L.tax : L.taxGeneric, L.inputTax],
-      data.vat.lines.map(function (r) { return [r.period, typeName(r.type), r.direction === "sale" ? L.sale : L.purchase, L.regimes[r.regime] || r.regime, r.rate + " %", r.base, r.tax, r.input_tax]; }),
-      [false, false, false, false, false, true, true, true]));
+    s.appendChild(table(jur([L.period, L.taxType, L.direction, L.regime, L.rate, L.base, vatOnly ? L.tax : L.taxGeneric, L.inputTax], { jurisdiction: L.jurisdiction }),
+      data.vat.lines.map(function (r) { return jur([r.period, typeName(r.type), r.direction === "sale" ? L.sale : L.purchase, regimeName(r), r.rate + " %", r.base, r.tax, r.input_tax], r); }),
+      jurFlags([false, false, false, false, false, true, true, true])));
     s.appendChild(el("h3", null, L.payable));
-    s.appendChild(table([L.period, L.taxType, vatOnly ? L.tax : L.taxGeneric, L.inputTax, L.payable],
-      data.vat.totals.map(function (r) { return [r.period, typeName(r.type), r.tax, r.input_tax, r.payable]; }), [false, false, true, true, true]));
+    var withDue = data.vat.totals.some(function (r) { return r.due; });
+    var dueCol = function (cells, r) { return withDue ? cells.concat([r ? r.due || "" : L.due]) : cells; };
+    s.appendChild(table(dueCol(jur([L.period, L.taxType, vatOnly ? L.tax : L.taxGeneric, L.inputTax, L.payable], { jurisdiction: L.jurisdiction })),
+      data.vat.totals.map(function (r) { return dueCol(jur([r.period, typeName(r.type), r.tax, r.input_tax, r.payable], r), r); }),
+      dueCol(jurFlags([false, false, true, true, true]), { due: false })));
+    var taxed = data.journal.filter(function (j) { return j.tax_regime && !j.tax_part; });
+    data.vat.totals.forEach(function (r) {
+      var rows = taxed.filter(function (j) { return j.tax_type === r.type && periodOf(j.tax_point || j.date, data.vat.period) === r.period; });
+      if (rows.length) s.appendChild(drill(r.period + " · " + typeName(r.type) + (r.jurisdiction ? " " + r.jurisdiction : ""), r.payable, rows, -1));
+    });
     if (data.vat.codes.length) {
       s.appendChild(el("h3", null, L.codes));
       s.appendChild(table([L.period, L.code, L.amount], data.vat.codes.map(function (r) { return [r.period, r.code, r.amount]; }),
@@ -245,9 +320,47 @@
     s.appendChild(table([L.party, L.bookings, L.amount], data.missing_receipts_by_party.map(function (r) {
       return [r.payee, String(r.count), r.amount];
     }), [false, true, true]));
-    s.appendChild(el("h3", null, L.firstBookings + (m.missing_receipts_count > data.missing_receipts.length
-      ? " (" + L.firstOf + " " + m.missing_receipts_count + ")" : "")));
-    s.appendChild(table([L.booking], data.missing_receipts.map(function (r) { return [r]; }), [false]));
+    s.appendChild(el("h3", null, L.firstBookings));
+    s.appendChild(table([L.date, L.party, L.account, L.text, L.amount], data.missing_receipts.map(function (r) {
+      return [r.date, r.payee, r.account, r.narration, r.amount];
+    }), [false, false, false, false, true]));
+  }
+
+  var tf = data.tax_form;
+  if (tf) {
+    s = section("taxform", L.taxForm + ": " + tf.form);
+    s.appendChild(el("p", { class: "sub" }, L.draft));
+    s.appendChild(table([L.line, L.name, L.amount], tf.lines.map(function (r) { return [r.line, r.name, r.amount]; }), [false, false, true]));
+    [[L.unmapped, tf.unmapped], [L.notDeductible, tf.not_deductible]].forEach(function (g) {
+      if (!g[1].length) return;
+      s.appendChild(el("h3", null, g[0]));
+      s.appendChild(table([L.name, L.amount], g[1].map(function (r) { return [r.name || r.account, r.amount]; }), [false, true]));
+    });
+  }
+
+  if (data.journal.length) {
+    s = section("bookings", L.search);
+    var bar = el("div", { class: "filters" }), q = el("input", { type: "search", placeholder: L.searchHint, "aria-label": L.searchHint });
+    var pick = el("select", { "aria-label": L.account });
+    pick.appendChild(el("option", { value: "" }, L.allAccounts));
+    Object.keys(byAcct).sort().forEach(function (a) { pick.appendChild(el("option", { value: a }, a)); });
+    bar.appendChild(q); bar.appendChild(pick); s.appendChild(bar);
+    var count = el("p", { class: "sub" }), out = el("div");
+    s.appendChild(count); s.appendChild(out);
+    var hay = data.journal.map(function (j) {
+      return [j.date, j.payee, j.narration, j.account, j.code, j.document, j.amount, String(j.amount).replace(".", ","), num(j.amount)].join(" ").toLowerCase();
+    });
+    var render = function () {
+      var words = q.value.toLowerCase().split(/\s+/).filter(Boolean), acct = pick.value;
+      var hits = data.journal.filter(function (j, i) {
+        return (!acct || j.account === acct) && words.every(function (w) { return hay[i].indexOf(w) >= 0; });
+      });
+      count.textContent = L.shown(Math.min(hits.length, LIMIT), hits.length);
+      out.replaceChildren(table([L.date, L.party, L.text, L.account, L.document, L.amount], hits.slice(0, LIMIT).map(function (j) {
+        return [j.date, j.payee, j.narration, j.account, docCell(j.document, j.document_url), j.amount];
+      }), [false, false, false, false, false, true]));
+    };
+    q.addEventListener("input", render); pick.addEventListener("change", render); render();
   }
 
   s = section("tb", L.tb);

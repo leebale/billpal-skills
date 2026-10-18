@@ -1,4 +1,4 @@
-chart,account,role,code,name_en,name_de,tax_regime,tax_rate,entity
+chart,account,role,code,name_en,name_de,tax_regime,tax_rate,entity,auto_tax,tax_line
 skr03,Assets:Bank:Giro,bank,1200,Bank,Bank,,
 skr03,Assets:Cash,cash,1000,Cash,Kasse,,
 skr03,Assets:Transit,clearing,1360,Money in transit,Geldtransit,,
@@ -22,15 +22,15 @@ skr03,Equity:Private-Deposits,private,1890,Private deposits,Privateinlagen,,,own
 skr03,Liabilities:Shareholder,shareholder,1665,Shareholder clearing account,Verrechnungskonto Gesellschafter,,,company
 skr03,Expenses:Corporate-Tax,,2200,Corporate income tax,Körperschaftsteuer,,,company
 skr03,Equity:Opening,opening,9000,Opening balances,Saldenvorträge,,
-skr03,Income:Sales-Reduced,,8300,Sales 7 % VAT,Erlöse 7 % USt,,
+skr03,Income:Sales-Reduced,,8300,Sales 7 % VAT,Erlöse 7 % USt,,,,7,
 skr03,Income:Discounts-Granted,discount_granted,8730,Discounts granted,Gewährte Skonti,,
 skr03,Expenses:Discounts-Received,discount_received,3730,Discounts received,Erhaltene Skonti,,
 skr03,Expenses:Depreciation,depreciation,4830,Depreciation,Abschreibungen auf Sachanlagen,,
 skr03,Expenses:Depreciation-GWG,,4855,Immediate write-off of low-value assets,Sofortabschreibung geringwertiger Wirtschaftsgüter,,
 skr03,Expenses:FX-Differences,fx_diff,2150,Currency differences,Aufwendungen aus Kursdifferenzen,,
-skr03,Income:Sales,,8400,Sales,Erlöse 19 % USt,,
+skr03,Income:Sales,,8400,Sales,Erlöse 19 % USt,,,,19,
 skr03,Income:Other,,8605,Other Income,Sonstige betriebliche Erträge,,
-skr03,Expenses:Cost-Of-Goods,,3400,Cost of Goods Sold,Wareneinsatz,,
+skr03,Expenses:Cost-Of-Goods,,3400,Cost of Goods Sold,Wareneinsatz,,,,19,
 skr03,Expenses:Materials,,3000,Materials & Supplies,"Roh-, Hilfs- und Betriebsstoffe",,
 skr03,Assets:Fixed:Furniture,fixed_asset,0420,Furniture & Fixtures,Möbel und Einrichtungen,,
 skr03,Expenses:Marketing,,4600,Advertising & Marketing,Werbekosten,,
@@ -44,6 +44,7 @@ skr03,Expenses:Software,,4806,Software & Subscriptions,Software und Lizenzen,,
 skr03,Expenses:Postage,,4910,Shipping & Delivery,Porto und Versand,,
 skr03,Expenses:Insurance,,4360,Insurance,Versicherungen,,
 skr03,Expenses:Meals,,4650,Meals & Entertainment,Bewirtungskosten,,
+skr03,Expenses:Meals:Nondeductible,,4654,Meals (not deductible),Nicht abzugsfähige Bewirtungskosten,,
 skr03,Expenses:Office-Supplies,,4930,Office Supplies,Büromaterial,,
 skr03,Expenses:Payroll,,4100,Payroll,Löhne und Gehälter,,
 skr03,Expenses:Contractors,,3100,Contractors & Freelancers,Fremdleistungen,,
@@ -84,15 +85,15 @@ skr04,Equity:Private-Deposits,private,2180,Private deposits,Privateinlagen,,,own
 skr04,Liabilities:Shareholder,shareholder,3640,Shareholder clearing account,Verrechnungskonto Gesellschafter,,,company
 skr04,Expenses:Corporate-Tax,,7600,Corporate income tax,Körperschaftsteuer,,,company
 skr04,Equity:Opening,opening,9000,Opening balances,Saldenvorträge,,
-skr04,Income:Sales-Reduced,,4300,Sales 7 % VAT,Erlöse 7 % USt,,
+skr04,Income:Sales-Reduced,,4300,Sales 7 % VAT,Erlöse 7 % USt,,,,7,
 skr04,Income:Discounts-Granted,discount_granted,4730,Discounts granted,Gewährte Skonti,,
 skr04,Expenses:Discounts-Received,discount_received,5730,Discounts received,Erhaltene Skonti,,
 skr04,Expenses:Depreciation,depreciation,6220,Depreciation,Abschreibungen auf Sachanlagen,,
 skr04,Expenses:Depreciation-GWG,,6260,Immediate write-off of low-value assets,Sofortabschreibung geringwertiger Wirtschaftsgüter,,
 skr04,Expenses:FX-Differences,fx_diff,6880,Currency differences,Aufwendungen aus Kursdifferenzen,,
-skr04,Income:Sales,,4400,Sales,Erlöse 19 % USt,,
+skr04,Income:Sales,,4400,Sales,Erlöse 19 % USt,,,,19,
 skr04,Income:Other,,4835,Other Income,Sonstige betriebliche Erträge,,
-skr04,Expenses:Cost-Of-Goods,,5400,Cost of Goods Sold,Wareneinsatz,,
+skr04,Expenses:Cost-Of-Goods,,5400,Cost of Goods Sold,Wareneinsatz,,,,19,
 skr04,Expenses:Materials,,5100,Materials & Supplies,"Roh-, Hilfs- und Betriebsstoffe",,
 skr04,Assets:Fixed:Furniture,fixed_asset,0650,Furniture & Fixtures,Möbel und Einrichtungen,,
 skr04,Expenses:Marketing,,6600,Advertising & Marketing,Werbekosten,,
@@ -106,6 +107,7 @@ skr04,Expenses:Software,,6495,Software & Subscriptions,Software und Lizenzen,,
 skr04,Expenses:Postage,,6800,Shipping & Delivery,Porto und Versand,,
 skr04,Expenses:Insurance,,6400,Insurance,Versicherungen,,
 skr04,Expenses:Meals,,6640,Meals & Entertainment,Bewirtungskosten,,
+skr04,Expenses:Meals:Nondeductible,,6644,Meals (not deductible),Nicht abzugsfähige Bewirtungskosten,,
 skr04,Expenses:Office-Supplies,,6815,Office Supplies,Büromaterial,,
 skr04,Expenses:Payroll,,6000,Payroll,Löhne und Gehälter,,
 skr04,Expenses:Contractors,,5900,Contractors & Freelancers,Fremdleistungen,,
@@ -183,45 +185,52 @@ qbo,Assets:Fixed:Accumulated-Depreciation,accumulated_depreciation,,Accumulated 
 qbo,Assets:Input-Tax,vat_in,,Input tax,Vorsteuer,,
 qbo,Assets:Uncategorized,suspense,,Uncategorized Asset,Ungeklärte Posten,,
 qbo,Liabilities:Payables,ap,,Accounts Payable (A/P),Verbindlichkeiten,,
+qbo,Liabilities:Credit-Card,card,,Credit Card,Kreditkarte,,
+qbo,Liabilities:Payroll-Liabilities,,,Payroll Liabilities,Verbindlichkeiten Lohn und Gehalt,,
+qbo,Liabilities:Loans,,,Loans Payable,Darlehen,,
 qbo,Liabilities:Sales-Tax-Payable,vat_out,,Sales Tax Payable,Umsatzsteuer,,
 qbo,Equity:Retained-Earnings,retained_earnings,,Retained Earnings,Gewinnvortrag,,
 qbo,Equity:Owners-Draw,private,,Owner's Draw,Privatentnahmen,,,owner
 qbo,Equity:Owners-Investment,private,,Owner's Investment,Privateinlagen,,,owner
 qbo,Liabilities:Due-to-Shareholder,shareholder,,Due to Shareholder,Verrechnungskonto Gesellschafter,,,company
+qbo,Equity:Distributions,private,,Shareholder Distributions,Ausschüttungen,,,company
 qbo,Equity:Opening-Balance,opening,,Opening Balance Equity,Eröffnungsbilanz,,
-qbo,Income:Discounts-Given,discount_granted,,Discounts given,Gewährte Rabatte,,
+qbo,Income:Discounts-Given,discount_granted,,Discounts given,Gewährte Rabatte,,,,,2
 qbo,Expenses:Discounts-Received,discount_received,,Discounts received,Erhaltene Skonti,,
-qbo,Expenses:Depreciation,depreciation,,Depreciation,Abschreibungen,,
+qbo,Expenses:Depreciation,depreciation,,Depreciation,Abschreibungen,,,,,13
 qbo,Expenses:FX-Differences,fx_diff,,Exchange Gain or Loss,Kursdifferenzen,,
-qbo,Income:Sales,,,Sales,Umsatzerlöse,,
-qbo,Income:Services,,,Service Revenue,Umsatzerlöse aus Leistungen,,
-qbo,Income:Other,,,Other Income,Sonstige betriebliche Erträge,,
-qbo,Expenses:Cost-Of-Goods,,,Cost of Goods Sold,Wareneinsatz,,
-qbo,Expenses:Materials,,,Materials & Supplies,"Roh-, Hilfs- und Betriebsstoffe",,
+qbo,Income:Sales,,,Sales,Umsatzerlöse,,,,,1
+qbo,Income:Services,,,Service Revenue,Umsatzerlöse aus Leistungen,,,,,1
+qbo,Income:Other,,,Other Income,Sonstige betriebliche Erträge,,,,,6
+qbo,Expenses:Cost-Of-Goods,,,Cost of Goods Sold,Wareneinsatz,,,,,4
+qbo,Expenses:Materials,,,Materials & Supplies,"Roh-, Hilfs- und Betriebsstoffe",,,,,22
 qbo,Assets:Fixed:Furniture,fixed_asset,,Furniture & Fixtures,Möbel und Einrichtungen,,
-qbo,Expenses:Marketing,,,Advertising & Marketing,Werbekosten,,
-qbo,Expenses:Vehicle,,,Vehicle Expenses,Fahrzeugkosten,,
-qbo,Expenses:Bank-Charges,,,Bank Charges,Bankgebühren,,
+qbo,Expenses:Marketing,,,Advertising & Marketing,Werbekosten,,,,,8
+qbo,Expenses:Vehicle,,,Vehicle Expenses,Fahrzeugkosten,,,,,9
+qbo,Expenses:Bank-Charges,,,Bank Charges,Bankgebühren,,,,,27b
 qbo,Expenses:Payment-Processing,,,Payment Processing Fees,Zahlungsabwicklungsgebühren,,
-qbo,Expenses:Education,,,Education & Training,Fortbildungskosten,,
-qbo,Expenses:Legal-Accounting,,,Legal & Accounting,Rechts- und Beratungskosten,,
-qbo,Expenses:Taxes-Licenses,,,Taxes & Licenses,Steuern und Gebühren,,
-qbo,Expenses:Small-Equipment,,,Computer & Small Equipment,Computer und Kleingeräte,,
+qbo,Expenses:Education,,,Education & Training,Fortbildungskosten,,,,,27b
+qbo,Expenses:Legal-Accounting,,,Legal & Accounting,Rechts- und Beratungskosten,,,,,17
+qbo,Expenses:Taxes-Licenses,,,Taxes & Licenses,Steuern und Gebühren,,,,,23
+qbo,Expenses:Small-Equipment,,,Computer & Small Equipment,Computer und Kleingeräte,,,,,22
 qbo,Expenses:Software,,,Software & Subscriptions,Software und Lizenzen,,
-qbo,Expenses:Postage,,,Shipping & Delivery,Porto und Versand,,
-qbo,Expenses:Insurance,,,Insurance,Versicherungen,,
-qbo,Expenses:Meals,,,Meals & Entertainment,Bewirtungskosten,,
-qbo,Expenses:Office-Supplies,,,Office Supplies,Büromaterial,,
-qbo,Expenses:Payroll,,,Payroll,Löhne und Gehälter,,
-qbo,Expenses:Contractors,,,Contractors & Freelancers,Fremdleistungen,,
-qbo,Expenses:Consulting,,,Professional Fees,Unternehmensberatung,,
-qbo,Expenses:Rent,,,Rent,Miete und Pacht,,
-qbo,Expenses:Repairs,,,Repairs & Maintenance,Reparaturen und Instandhaltung,,
-qbo,Expenses:Phone,,,Phone & Internet,Telefon und Internet,,
-qbo,Expenses:Travel,,,Travel,Reisekosten,,
-qbo,Expenses:Utilities,,,Utilities,Energie und Versorgung,,
-qbo,Expenses:Commissions,,,Commissions & Referral Fees,Verkaufsprovisionen,,
-qbo,Expenses:Interest,,,Interest Expense,Zinsaufwendungen,,
-qbo,Expenses:Other,,,Other Expense,Sonstige betriebliche Aufwendungen,,
-qbo,Expenses:Gifts,,,Gifts,Geschenke,,
-qbo,Expenses:Memberships,,,Membership Dues,Mitgliedsbeiträge,,
+qbo,Expenses:Postage,,,Shipping & Delivery,Porto und Versand,,,,,18
+qbo,Expenses:Insurance,,,Insurance,Versicherungen,,,,,15
+qbo,Expenses:Meals,,,Meals,Bewirtungskosten,,,,,24b
+qbo,Expenses:Meals:Nondeductible,,,Meals (not deductible),Bewirtung (nicht abzugsfähig),,,,,none
+qbo,Expenses:Entertainment,,,Entertainment (not deductible),Unterhaltung (nicht abzugsfähig),,,,,none
+qbo,Expenses:Office-Supplies,,,Office Supplies,Büromaterial,,,,,18
+qbo,Expenses:Payroll,,,Payroll,Löhne und Gehälter,,,,,26
+qbo,Expenses:Payroll-Taxes,,,Payroll Taxes,Lohnnebenkosten,,,,,23
+qbo,Expenses:Contractors,,,Contractors & Freelancers,Fremdleistungen,,,,,11
+qbo,Expenses:Consulting,,,Professional Fees,Unternehmensberatung,,,,,17
+qbo,Expenses:Rent,,,Rent,Miete und Pacht,,,,,20b
+qbo,Expenses:Repairs,,,Repairs & Maintenance,Reparaturen und Instandhaltung,,,,,21
+qbo,Expenses:Phone,,,Phone & Internet,Telefon und Internet,,,,,25
+qbo,Expenses:Travel,,,Travel,Reisekosten,,,,,24a
+qbo,Expenses:Utilities,,,Utilities,Energie und Versorgung,,,,,25
+qbo,Expenses:Commissions,,,Commissions & Referral Fees,Verkaufsprovisionen,,,,,10
+qbo,Expenses:Interest,,,Interest Expense,Zinsaufwendungen,,,,,16b
+qbo,Expenses:Other,,,Other Expense,Sonstige betriebliche Aufwendungen,,,,,27b
+qbo,Expenses:Gifts,,,Gifts,Geschenke,,,,,27b
+qbo,Expenses:Memberships,,,Membership Dues,Mitgliedsbeiträge,,,,,27b

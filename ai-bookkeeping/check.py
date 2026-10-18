@@ -212,6 +212,9 @@ def book_a(tmp: Path) -> None:
         "05.02.2026;-30,00;Bankspesen Februar;1.930,00\n", encoding="utf-8")
     ok("from-csv", f / "overlap.csv", "--ledger", v4, "--map", "erste", "--account", "Assets:Bank:Giro",
        "--from", "2026-01-20", "--to", "2026-02-05", "--opening", "3460.00", "--out", f / "overlap.statement.json")
+    fails("differs from the balance column", "from-csv", f / "overlap.csv", "--ledger", v4, "--map", "erste",
+          "--account", "Assets:Bank:Giro", "--from", "2026-01-20", "--to", "2026-02-05", "--opening", "0.00",
+          "--out", f / "x.statement.json")
     pend = ok("stage", v4, f / "overlap.statement.json")
     s = pend["statements"][0]
     assert s["counts"] == {"ambiguous": 1, "new": 1}, s
@@ -405,6 +408,11 @@ def book_a(tmp: Path) -> None:
     ok("check", v17, "--year-end")
     prev = ok("rollover", v17)
     assert prev["ready"] and not (f / "2027-v1.beancount").exists()
+    # the preview shows the year's profit and the private withdrawals apart
+    b17 = ledger.Book.load(v17)
+    own = lambda keep: sum((ledger.own_balance(b17, x) for x in b17.accounts if keep(x)), D(0))
+    assert D(prev["result"]) == -own(lambda x: x.split(":")[0] in ("Income", "Expenses")), prev
+    assert D(prev["draws"]) == own(lambda x: b17.role_of(x) == "private") != 0, prev
     ok("rollover", v17, "--write")
     n1 = f / "2027-v1.beancount"
     WRITTEN.append(n1)
@@ -1028,7 +1036,7 @@ def book_e(tmp: Path) -> None:
              "invoice_date": "2026-02-02", "total_amount": 108.0, "currency": "EUR", "party_name": "Shop KG"}]),
         billpal_doc(id="us-1", currency="usd", total_amount=108.88, supplier={
                         **shop, "id": "c-us", "company_name": "Staples", "brand_name": "Staples Store", "country": "US",
-                        "tax_id_country": "EU"},
+                        "tax_id": "EU372041333", "tax_id_country": "EU"},
                     tax_lines=[{"tax_type": "sales_tax", "tax_regime": "standard", "tax_rate": 8.875,
                                 "tax_base": 100.0, "tax_amount": 8.88, "label": None, "exemption_reason": None}],
                     line_items=[billpal_line(100.0, 8.875)]),
@@ -1053,7 +1061,7 @@ def book_e(tmp: Path) -> None:
     # both names and both countries pass through unmerged; the reverse-charge rule picks between them later
     us = docs["billpal:us-1"]["party"]
     assert us == {"name": "Staples", "iban": None, "personenkonto": None, "company_name": "Staples",
-                  "brand_name": "Staples Store", "country": "US", "tax_id_country": "EU"}, us
+                  "brand_name": "Staples Store", "country": "US", "tax_id": "EU372041333", "tax_id_country": "EU"}, us
     assert inv["lines"][0]["tax"]["rate"] == "20" and inv["lines"][0]["amount_is"] == "net", inv
     assert docs["billpal:rcpt-1"]["linked"] == ["billpal:inv-1"] and docs["billpal:cn-1"]["applies_to"] == "billpal:inv-1"
     # Billpal prints the credit note as -24.00; documents/1 keeps it positive and the kind gives the direction
@@ -1191,7 +1199,8 @@ def book_f(tmp: Path) -> None:
     assert not any(c["type"] == "fx_difference" for r in ("1:1", "1:2") for c in by[r]["candidates"]), by["1:2"]
     c1 = by["1:1"]["candidates"][0]
     assert "100.18 USD" in c1["explanation"] and c1["currency"] == "USD" and c1["linked_receipts"] == ["billpal:rcpt-1"], c1
-    assert c1["derived_tax"] == {"type": "vat", "regime": "reverse_charge", "rate": "20", "source": "derived", "confirmed": True}
+    # derived is never confirmed on its own: the user's yes to the booking confirms it
+    assert c1["derived_tax"] == {"type": "vat", "regime": "reverse_charge", "rate": "20", "source": "derived", "confirmed": False}
     assert by["1:3"]["bank_fee"] and not by["1:3"]["candidates"], by["1:3"]
     assert ex("1:5") == [(["billpal:shop-r"], False)], by["1:5"]
     assert [c["type"] for c in by["1:4"]["candidates"]] == ["partial"], by["1:4"]
@@ -1222,8 +1231,13 @@ def book_f(tmp: Path) -> None:
     by_row = {t.meta["source_row"]: t for t in b.txns if t.meta.get("source_row")}
     cursor = by_row["1"]
     soft = next(p for p in cursor.postings if p.account == "Expenses:Software")
-    assert cursor.payee == "Cursor" and (soft.meta["tax_regime"], soft.meta["tax_rate"], soft.meta["tax_source"]) == (
-        "reverse_charge", "20", "derived"), (cursor.payee, soft.meta)
+    assert cursor.payee == "Cursor" and (soft.meta["tax_regime"], soft.meta["tax_rate"], soft.meta["tax_source"],
+                                         soft.meta["tax_confirmed"]) == ("reverse_charge", "20", "derived", "yes"), (cursor.payee, soft.meta)
+    # USD documents paid from the EUR account: written back in USD from the original amount on the bank row
+    wb = {d["document"]: d for d in ok("writeback", latest(f, "f"), "--documents", docs)["documents"]}
+    assert (wb["billpal:cur-1"]["paid"], wb["billpal:cur-1"]["currency"], wb["billpal:cur-1"]["total"]) == ("100.18", "USD", "100.18")
+    assert [c["arguments"]["payment_status"] for c in wb["billpal:cur-1"]["calls"]] == ["paid"], wb["billpal:cur-1"]
+    assert wb["billpal:notion-1"]["paid"] == "22.00" and wb["billpal:het-1"]["calls"][0]["arguments"]["payment_status"] == "paid"
     assert by_row["4"].payee == "Hetzner Online GmbH" and by_row["7"].meta["document"] == "billpal:het-1"
     notion = by_row["6"]
     assert [p.meta.get("tax_regime") for p in notion.postings if p.account in ("Expenses:Software", "Equity:Private")] == [
@@ -1249,6 +1263,10 @@ def book_f(tmp: Path) -> None:
     assert out["missing_receipts_count"] == 3 and out["missing_receipts_by_party"] == [
         {"payee": "Cursor", "count": 2, "amount": "-178.28"}, {"payee": "Spar", "count": 1, "amount": "-5.00"}], out
     data = json.loads((f / "rep" / "report-data.json").read_text())
+    assert [(m["date"], m["payee"], m["amount"], m["account"]) for m in data["missing_receipts"]] == [
+        ("2026-02-02", "Cursor", "-89.14", "Expenses:Software"), ("2026-02-03", "Cursor", "-89.14", "Expenses:Software"),
+        ("2026-02-04", "Spar", "-5.00", "Expenses:Office-Supplies")], data["missing_receipts"]
+    assert (f / "rep" / "missing-receipts.csv").read_text(encoding="utf-8-sig").startswith("date,payee,amount,account")
     het = [j["document"] for j in data["journal"] if j["account"] == "Expenses:Software" and j["payee"] == "Hetzner Online GmbH"]
     assert het == ["billpal:het-1", "billpal:het-1"], het
 
@@ -1298,6 +1316,103 @@ def book_f(tmp: Path) -> None:
               {"ref": "1:1", "lines": line, "confirmed": "document", "document": "billpal:sp-r", "match": "exact: receipt"},
               {"ref": "1:2", "lines": line, "confirmed": "document", "document": "billpal:sp-inv", "match": "exact: invoice"}]}))
     print("book F (Wise CSV, USD matching, derived reverse charge): ok")
+
+
+# ── Book H: Billpal exclusions, reverse charge at 0 %, unreadable documents, card gaps ──
+
+def book_h(tmp: Path) -> None:
+    f = tmp / "h"
+    f.mkdir()
+    wise = {"id": "wise", "delimiter": ",", "decimal": ".", "date_format": "%d-%m-%Y",
+            "columns": {"booking_date": "Date", "amount": "Amount", "currency": "Currency", "text": "Description",
+                        "counterparty": ["Merchant", "Payee Name", "Payer Name"], "bank_id": "TransferWise ID",
+                        "original_amount": "Exchange To Amount", "original_currency": "Exchange To"}}
+    ok("init", put(f / "init.json", {
+        "schema": "init/1", "title": "Leeb e.U.", "file_label": "h", "chart": "oekr", "new_business": True,
+        "ledger": {"fiscal_year_from": "2026-01-01", "fiscal_year_to": "2026-12-31", "currency": "EUR"},
+        "profile": {"country": "AT", "legal_form": "Einzelunternehmen", "basis": "cash", "vat_status": "regular",
+                    "vat_basis": "payment", "vat_period": "quarter", "chart": "oekr"},
+        "accounts": [{"account": "Assets:Bank:Wise", "role": "bank", "name": "Wise"}], "csv_maps": [wise]}), "--out-dir", f)
+    v = f / "h-v1.beancount"
+    b = ledger.Book.load(v)
+
+    # a CSV export reaching past the statement range keeps only the range; the output lands next to the ledger
+    elsewhere = tmp / "h-downloads"
+    elsewhere.mkdir()
+    (elsewhere / "wise.csv").write_text(WISE_CSV + "LATE-1,03-02-2026,-9.99,EUR,Card transaction issued by Late,Late,,,,,\n",
+                                        encoding="utf-8")
+    out = ok("from-csv", elsewhere / "wise.csv", "--ledger", v, "--map", "wise", "--account", "Assets:Bank:Wise",
+             "--from", "2026-01-01", "--to", "2026-01-31", "--opening", "0.00", "--closing", "-360.75")
+    assert Path(out["written"]).parent == f, out
+    rows = json.loads(Path(out["written"]).read_text())["statements"][0]["rows"]
+    assert len(rows) == 7 and all(r["booking_date"] <= "2026-01-31" for r in rows), rows
+
+    # Billpal: excluded documents are named, not converted; reverse charge at 0 % or as a bare flag gets the
+    # Austrian rate, derived and unconfirmed; a sale keeps 0 %
+    aws = {"id": "c-aws", "company_name": "Amazon Web Services EMEA SARL", "brand_name": "AWS", "country": "LU"}
+    rc0 = lambda base: [{"tax_type": "vat", "tax_regime": "reverse_charge", "tax_rate": 0, "tax_base": base,
+                         "tax_amount": 0.0, "label": None, "exemption_reason": None}]
+    bp = ledger.from_billpal({"documents": [
+        billpal_doc(id="ex-1", status="excluded", total_amount=9.0, supplier=aws),
+        billpal_doc(id="rc-0", total_amount=100.0, net_amount=100.0, reverse_charge=True, supplier=aws, app_url="https://x.io/d/rc-0",
+                    tax_lines=rc0(100.0), line_items=[billpal_line(100.0, 0)]),
+        billpal_doc(id="rc-flag", total_amount=50.0, net_amount=50.0, reverse_charge=True, supplier=aws),
+        billpal_doc(id="rc-out", direction="outgoing", total_amount=200.0, net_amount=200.0, customer=aws,
+                    tax_lines=rc0(200.0))]})
+    assert [d["id"] for d in bp["documents"]] == ["billpal:rc-0", "billpal:rc-flag", "billpal:rc-out"], bp["documents"]
+    assert bp["documents"][0]["url"] == "https://x.io/d/rc-0" and "url" not in bp["documents"][1]
+    assert any(n.startswith("billpal:ex-1: excluded in Billpal (AWS") for n in bp["notes"]), bp["notes"]
+    nd = {d["id"]: ledger.norm_doc(d, b, need_rate=False) for d in bp["documents"]}
+    want = {"type": "vat", "regime": "reverse_charge", "rate": "20", "source": "derived", "confirmed": False}
+    for ref in ("billpal:rc-0", "billpal:rc-flag"):
+        assert nd[ref]["rc_filled"] == want and ledger.derive_tax(nd[ref], b) == want, nd[ref]
+    assert nd["billpal:rc-0"]["lines"][0]["tax"]["rate"] == "20" and nd["billpal:rc-0"]["taxes"][0]["amount"] is None, nd["billpal:rc-0"]
+    assert nd["billpal:rc-out"]["taxes"][0]["rate"] == D(0) and not nd["billpal:rc-out"]["rc_filled"], nd["billpal:rc-out"]
+    none = SimpleNamespace(**{**vars(b), "profile": {**b.profile, "vat_status": "none"}})
+    assert not ledger.norm_doc(bp["documents"][0], none, need_rate=False)["taxes"][0]["regime"]
+    # a copied 0 % reverse charge on a purchase would book no VAT, so it is refused
+    raises("at 0 % books no VAT", ledger.expand_line, b, {"account": "Expenses:Software", "tax": {
+        "regime": "reverse_charge", "rate": "0", "source": "document"}}, D("-100.00"), b.fy_from, "x", require_tax=True)
+    # the user's yes confirms a derived treatment; an agent's guess stays unconfirmed
+    assert ledger.user_tax([{"tax": want}], "user")[0]["tax"]["confirmed"] is True
+    assert ledger.user_tax([{"tax": want}], "no")[0]["tax"]["confirmed"] is False
+
+    # one unreadable document never stops candidates, stage-documents or commit; a review document is not even read
+    row = {"ref": "1:1", "status": "new", "amount": "-98.00", "booking_date": "2026-03-04",
+           "text": "Card transaction issued by Office KG", "counterparty": "Office KG"}
+    office = {"id": "billpal:off-1", "kind": "invoice", "direction": "in", "date": "2026-03-01", "total": "100.00",
+              "party": {"name": "Office KG"}, "url": "https://billpal.io/dashboard/documents/off-1?workspace=w1"}
+    raises("url must be an http(s) address", ledger.norm_doc, {**office, "url": "javascript:alert(1)"}, b)
+    docs = {"documents": [office, {"id": "billpal:bad", "kind": "invoice", "direction": "sideways", "date": "2026-03-01"},
+                          {"id": "billpal:rev", "kind": "invoice", "direction": "in", "date": "nope", "review_open": True}]}
+    cand = ledger.candidates(b, {"kind": "statement", "statements": [{"kind": "bank", "rows": [row]}]}, docs)
+    assert [s["document"] for s in cand["skipped_documents"]] == ["billpal:bad"], cand["skipped_documents"]
+    # a card payment 2 % short is a partial or a rounding, never a cash discount; a transfer may be Skonto
+    assert [c["type"] for c in cand["rows"][0]["candidates"]] == ["partial"], cand["rows"][0]
+    transfer = {**row, "text": "Office KG Rechnung"}
+    cand = ledger.candidates(b, {"kind": "statement", "statements": [{"kind": "bank", "rows": [transfer]}]}, docs)
+    assert [c["type"] for c in cand["rows"][0]["candidates"]] == ["skonto_unconfirmed"], cand["rows"][0]
+    accrual = ledger.Book.load(latest(tmp / "d", "d"))
+    sd = {d["ref"]: d for d in ledger.stage_documents(accrual, {"schema": "documents/1", **docs})["documents"]}
+    assert sd["billpal:bad"]["status"] == "invalid" and sd["billpal:rev"]["status"] == "invalid", sd
+    assert sd["billpal:off-1"]["status"] == "new"
+    jan = {"schema": "statement/1", "statements": [{
+        "source_id": "wise-jan", "account": "Assets:Bank:Wise", "from": "2026-01-01", "to": "2026-01-31",
+        "opening": "0.00", "closing": "-98.00", "extraction": "manual", "rows": [
+            {"booking_date": "2026-01-04", "amount": "-98.00", "counterparty": "Office KG", "text": "Office KG"}]}]}
+    pend = ok("stage", v, put(f / "jan.json", jan))
+    line = [{"account": "Expenses:Office-Supplies", "tax": {"regime": "standard", "rate": "20", "source": "user"}}]
+    dec_ = lambda doc: put(f / "jan.dec.json", {"rows": [{"ref": "1:1", "lines": line, "confirmed": "user", "document": doc}]})
+    fails("document billpal:bad could not be read", "commit", v, pend["pending"], "--documents", put(f / "docs.json", {
+        "schema": "documents/1", **docs}), "--decisions", dec_("billpal:bad"))
+    ok("commit", v, pend["pending"], "--documents", f / "docs.json", "--decisions", dec_("billpal:off-1"))
+    # the booking links to its document, in the ledger and in the report
+    paid = next(t for t in ledger.Book.load(latest(f, "h")).txns if t.meta.get("document") == "billpal:off-1")
+    assert paid.meta["document_url"] == office["url"], paid.meta
+    ok("report", latest(f, "h"), "--out-dir", f / "rep")
+    journal = json.loads((f / "rep" / "report-data.json").read_text())["journal"]
+    assert {j["document_url"] for j in journal if j["document"] == "billpal:off-1"} == {office["url"]}, journal
+    print("book H (Billpal exclusions, reverse charge at 0 %, unreadable documents, card gaps): ok")
 
 
 # ── Performance: 50,000 transactions ─────────────────────────────────────────
@@ -1418,7 +1533,8 @@ def book_c(tmp: Path) -> None:
     assert b.balance("Expenses:Office-Supplies") == D("54.44") and b.balance("Assets:Input-Tax") == 0
     vat = ledger.vat_schedule(b, b.fy_from, b.fy_to)
     assert vat["types"] == ["sales_tax"] and vat["totals"] == [
-        {"period": "2026", "type": "sales_tax", "tax": D("8.88"), "input_tax": D("0.00"), "payable": D("8.88")}], vat
+        {"period": "2026", "type": "sales_tax", "jurisdiction": None, "tax": D("8.88"), "input_tax": D("0.00"),
+         "payable": D("8.88"), "due": None}], vat
     # cash basis: a document still in Billpal Review is never offered as a match, it is listed as held
     row = {"ref": "1:1", "status": "new", "amount": "-11.90", "booking_date": "2026-03-02", "text": "Shop Inc"}
     doc = {"id": "billpal:held", "kind": "receipt", "direction": "in", "date": "2026-03-01", "total": "11.90",
@@ -1430,8 +1546,342 @@ def book_c(tmp: Path) -> None:
     # country rules apply only inside their effective years
     at = ledger.Book.load(latest(tmp / "a", "2026"))
     assert ledger.country_rule(at, 2019) == {} and ledger.country_rule(at, 2021)["gwg_limit"] == "800"
-    assert ledger.country_rule(at, 2026)["gwg_limit"] == "1000" and ledger.country_rule(b, 2026) == {}
+    assert ledger.country_rule(at, 2026)["gwg_limit"] == "1000"
+    assert ledger.country_rule(b, 2026)["gwg_limit"] == "2500" and ledger.country_rule(b, 2015) == {}
     print("book C (US, QBO, indirect depreciation): ok")
+
+
+OFX1 = """OFXHEADER:100
+DATA:OFXSGML
+VERSION:102
+CHARSET:1252
+
+<OFX><BANKMSGSRSV1><STMTTRNRS><STMTRS><CURDEF>USD
+<BANKACCTFROM><BANKID>021000021<ACCTID>000123456789<ACCTTYPE>CHECKING</BANKACCTFROM>
+<BANKTRANLIST><DTSTART>20260201<DTEND>20260228
+<STMTTRN><TRNTYPE>DEBIT<DTPOSTED>20260203120000.000[-5:EST]<TRNAMT>-42.50<FITID>F1<NAME>ADOBE INC<MEMO>ADOBE *CREATIVE CLD</STMTTRN>
+<STMTTRN><TRNTYPE>CHECK<DTPOSTED>20260210<TRNAMT>-500.00<FITID>F2<CHECKNUM>1042<NAME>CHECK 1042</STMTTRN>
+<STMTTRN><TRNTYPE>CREDIT<DTPOSTED>20260215<TRNAMT>1200.00<FITID>F3<NAME>STRIPE &amp; CO</STMTTRN>
+</BANKTRANLIST><LEDGERBAL><BALAMT>1657.50<DTASOF>20260228</LEDGERBAL></STMTRS></STMTTRNRS></BANKMSGSRSV1></OFX>
+"""
+
+OFX2 = """<?xml version="1.0" encoding="UTF-8"?><?OFX OFXHEADER="200" VERSION="220"?>
+<OFX><CREDITCARDMSGSRSV1><CCSTMTTRNRS><CCSTMTRS><CURDEF>USD</CURDEF>
+<BANKTRANLIST><DTSTART>20260201</DTSTART><DTEND>20260228</DTEND>
+<STMTTRN><TRNTYPE>DEBIT</TRNTYPE><DTPOSTED>20260205</DTPOSTED><TRNAMT>-18.00</TRNAMT><FITID>C1</FITID><NAME>SQ *BLUE BOTTLE</NAME></STMTTRN>
+</BANKTRANLIST><LEDGERBAL><BALAMT>-18.00</BALAMT><DTASOF>20260228</DTASOF></LEDGERBAL></CCSTMTRS></CCSTMTTRNRS></CREDITCARDMSGSRSV1></OFX>
+"""
+
+
+def book_i(tmp: Path) -> None:
+    """US bank imports: merchant names out of Chase, Wells Fargo and Bank of America wording, checks,
+    a header-less CSV with dollar signs, and OFX 1.x and 2.x."""
+    key = lambda text, **kw: ledger.vendor_key({"text": text, **kw})
+    chase_ach = "ORIG CO NAME:GUSTO ORIG ID:9138864001 DESC DATE:260115 CO ENTRY DESCR:NET PAY SEC:PPD TRACE#:021000021234567"
+    assert ledger.merchant_text(chase_ach) == "GUSTO" and key(chase_ach) == "text:gusto"
+    assert key("ORIG CO NAME:GUSTO DES:PAYROLL ID:4421") == key("ORIG CO NAME:GUSTO DES:TAX ID:4422") == "text:gusto"
+    # OFX NAME and a CSV counterparty column carry the same bank wording
+    assert key("", counterparty="PURCHASE AUTHORIZED ON 01/05 STARBUCKS STORE 12345").startswith("text:starbucks")
+    wf_a = "PURCHASE AUTHORIZED ON 01/05 STARBUCKS STORE 12345 SEATTLE WA S386005123456789 CARD 1234"
+    wf_b = "PURCHASE AUTHORIZED ON 01/19 STARBUCKS STORE 12345 SEATTLE WA S586019987654321 CARD 1234"
+    assert key(wf_a) == key(wf_b) and key(wf_a).startswith("text:starbucks"), (key(wf_a), key(wf_b))
+    assert key("RECURRING PAYMENT AUTHORIZED ON 01/03 NETFLIX.COM LOS GATOS CA S466003 CARD 1234").startswith("text:netflix")
+    bofa_card = "CHECKCARD 0105 AMAZON WEB SERVICES AWS.AMAZON.CO WA 24692166005100386421234"
+    assert key(bofa_card).startswith("text:amazon web services"), key(bofa_card)
+    bofa_ach = "INTUIT DES:QBOOKS ONL ID:XXXXX1234 INDN:ACME LLC CO ID:9215986202 CCD"
+    assert key(bofa_ach) == "text:intuit", key(bofa_ach)
+    assert key("SQ *BLUE BOTTLE COFFEE") == key("SQ * BLUE BOTTLE COFFEE") == "text:blue bottle coffee"
+    assert key("CHECK 1042") == "check:1042" and key("Check #1043") == "check:1043"
+    assert key("", check_number="1044") == "check:1044"
+    # German wording keeps its old key
+    assert key("Kartenzahlung BILLA DANKT 1234") == "text:billa dankt"
+
+    f = tmp / "i"
+    f.mkdir()
+    plain = {"id": "plain", "header": False, "date_format": "%m/%d/%Y",
+             "columns": {"booking_date": "1", "amount": "2", "text": "5", "check_number": "4"}}
+    ok("init", put(f / "init.json", {
+        "schema": "init/1", "title": "Acme LLC", "file_label": "i",
+        "ledger": {"fiscal_year_from": "2026-01-01", "fiscal_year_to": "2026-12-31", "currency": "USD"},
+        "profile": {"country": "US", "legal_form": "LLC", "basis": "cash", "vat_status": "none", "chart": "qbo"},
+        "chart": "qbo", "new_business": True, "csv_maps": [plain],
+        "accounts": [{"account": "Liabilities:Card:Amex", "role": "card", "name": "Amex"}]}), "--out-dir", f)
+    v = f / "i-v1.beancount"
+    fails("columns are positions", "journal", v, put(f / "bad-map.json", {"schema": "journal/1", "csv_maps": [
+        {**plain, "id": "bad", "columns": {"booking_date": "Date", "amount": "2"}}]}))
+    # Wells Fargo's CSV download has no header row
+    (f / "wf.csv").write_text('"01/05/2026","-$5.75","*","","PURCHASE AUTHORIZED ON 01/05 STARBUCKS STORE 12345"\n'
+                              '"01/10/2026","($500.00)","*","1042","CHECK 1042"\n'
+                              '"01/15/2026","2,500.00","*","","ORIG CO NAME:STRIPE ORIG ID:1800948598"\n', encoding="utf-8")
+    out = ok("from-csv", f / "wf.csv", "--ledger", v, "--map", "plain", "--account", "Assets:Bank:Checking",
+             "--from", "2026-01-01", "--to", "2026-01-31", "--opening", "0.00", "--closing", "1994.25")
+    rows = json.loads(Path(out["written"]).read_text())["statements"][0]["rows"]
+    assert [r["amount"] for r in rows] == ["-5.75", "-500.00", "2500.00"], rows
+    assert rows[1]["check_number"] == "1042" and "check_number" not in rows[0]
+
+    (f / "chase.qfx").write_text(OFX1, encoding="cp1252")
+    out = ok("from-ofx", f / "chase.qfx", "--ledger", v, "--account", "Assets:Bank:Checking")
+    st = json.loads(Path(out["written"]).read_text())["statements"][0]
+    assert (st["kind"], st["from"], st["to"], st["opening"], st["closing"]) == ("bank", "2026-02-01", "2026-02-28", "1000.00", "1657.50"), st
+    assert [r["amount"] for r in st["rows"]] == ["-42.50", "-500.00", "1200.00"], st["rows"]
+    assert st["rows"][1]["check_number"] == "1042" and st["rows"][2]["counterparty"] == "STRIPE & CO"
+    assert st["rows"][0]["bank_id"] == "F1" and st["rows"][0]["booking_date"] == "2026-02-03"
+    (f / "amex.ofx").write_text(OFX2, encoding="utf-8")
+    out = ok("from-ofx", f / "amex.ofx", "--ledger", v, "--account", "Liabilities:Card:Amex")
+    st = json.loads(Path(out["written"]).read_text())["statements"][0]
+    assert st["kind"] == "card" and st["opening"] == "0.00" and st["rows"][0]["counterparty"] == "SQ *BLUE BOTTLE", st
+    fails("no bank or credit card statement", "from-ofx", put(f / "empty.ofx", {}), "--ledger", v, "--account", "Assets:Bank:Checking")
+    # the January CSV stages: every check its own group, the payee cleaned of bank wording
+    pending = ledger.stage(ledger.Book.load(v), json.loads((f / "wf.statement.json").read_text()))
+    groups = {r["vendor_key"] for s in pending["statements"] for r in s["rows"]}
+    assert {"check:1042", "text:stripe"} <= groups, groups
+    print("book I (US bank imports: Chase, Wells Fargo, Bank of America, OFX): ok")
+
+
+def book_j(tmp: Path) -> None:
+    """US entities: sales tax per state, use tax, an S corp's distributions, and a partnership's rollover."""
+    f = tmp / "j"
+    f.mkdir()
+    us = {"fiscal_year_from": "2026-01-01", "fiscal_year_to": "2026-12-31", "currency": "USD"}
+    ok("init", put(f / "init.json", {
+        "schema": "init/1", "title": "Two Owls LLC", "file_label": "j", "chart": "qbo", "new_business": True, "ledger": us,
+        "profile": {"country": "US", "legal_form": "LLC taxed as a partnership", "basis": "cash", "vat_status": "none", "chart": "qbo"},
+        "skip_accounts": ["Equity:Retained-Earnings", "Equity:Owners-Draw", "Equity:Owners-Investment"],
+        "accounts": [
+            {"account": "Liabilities:Sales-Tax:CA", "role": "vat_out", "tax_jurisdiction": "CA", "name": "Sales tax CA"},
+            {"account": "Liabilities:Sales-Tax:NY", "role": "vat_out", "tax_jurisdiction": "NY", "name": "Sales tax NY"},
+            {"account": "Equity:Capital:Ana", "role": "retained_earnings", "partner": "Ana", "share": "0.6", "name": "Ana capital"},
+            {"account": "Equity:Capital:Ben", "role": "retained_earnings", "partner": "Ben", "share": "0.4", "name": "Ben capital"},
+            {"account": "Equity:Draws:Ana", "role": "private", "partner": "Ana", "name": "Ana draws"},
+            {"account": "Equity:Draws:Ben", "role": "private", "partner": "Ben", "name": "Ben draws"}]}), "--out-dir", f)
+    v = f / "j-v1.beancount"
+    fails("tax_jurisdiction is a code", "journal", v, put(f / "bad-jur.json", {"schema": "journal/1", "accounts": [
+        {"account": "Liabilities:Sales-Tax:X", "role": "vat_out", "tax_jurisdiction": "California"}]}))
+    fails("share (above 0", "journal", v, put(f / "bad-share.json", {"schema": "journal/1", "accounts": [
+        {"account": "Equity:Capital:Cy", "role": "private", "partner": "Cy", "share": "0.1"}]}))
+    st = lambda j, rate: {"type": "sales_tax", "regime": "standard", "rate": rate, "jurisdiction": j, "source": "user"}
+    entry = lambda d, amount, lines, payee="Client": {"date": d, "payee": payee, "confirmed": "user", "no_document": "test",
+                                                     "lines": [{"account": "Assets:Bank:Checking", "amount": amount}] + lines}
+    ok("journal", v, put(f / "year.json", {"schema": "journal/1", "entries": [
+        entry("2026-02-01", "108.25", [{"account": "Income:Sales", "tax": st("CA", "8.25")}]),
+        entry("2026-02-02", "108.00", [{"account": "Income:Sales", "tax": st("NY", "8")}]),
+        # an out-of-state purchase without sales tax: the buyer owes California use tax on top of the price
+        entry("2026-02-03", "-200.00", [{"account": "Expenses:Small-Equipment", "amount": "200.00", "tax": {
+            "type": "sales_tax", "regime": "reverse_charge", "rate": "7.25", "jurisdiction": "CA", "source": "user"}}], "B&H"),
+        entry("2026-03-01", "-1000.00", [{"account": "Equity:Draws:Ana"}], "Ana"),
+        entry("2026-03-01", "-500.00", [{"account": "Equity:Draws:Ben"}], "Ben")]}))
+    b = ledger.Book.load(latest(f, "j"))
+    assert b.balance("Liabilities:Sales-Tax:CA") == D("-22.75") and b.balance("Liabilities:Sales-Tax:NY") == D("-8.00")
+    assert b.balance("Expenses:Small-Equipment") == D("214.50"), b.balance("Expenses:Small-Equipment")
+    vat = ledger.vat_schedule(b, b.fy_from, b.fy_to)
+    assert [(t["jurisdiction"], t["payable"]) for t in vat["totals"]] == [("CA", D("22.75")), ("NY", D("8.00"))], vat["totals"]
+    # a state without its own account uses the general one
+    tx = ledger.expand_line(b, {"account": "Income:Sales", "tax": st("TX", "6.25")}, D("-106.25"), b.fy_from, "x", require_tax=True)
+    assert tx[1].account == "Liabilities:Sales-Tax-Payable" and tx[1].meta["tax_jurisdiction"] == "TX", tx
+    # the partnership's result splits 60/40 and each partner's draws close into their own capital
+    pre = ledger.build_rollover(b, None, None, write=False)
+    lines = {l["account"]: D(l["amount"]) for l in pre["opening_lines"]}
+    # result: 100 + 100 sales - 214.50 equipment = -14.50 (a loss); Ana -8.70, Ben -5.80
+    assert lines["Equity:Capital:Ana"] == D("1000.00") + D("8.70") and lines["Equity:Capital:Ben"] == D("500.00") + D("5.80"), lines
+    assert "Equity:Draws:Ana" not in lines and pre["result_to"] == ["Equity:Capital:Ana", "Equity:Capital:Ben"]
+    ok("journal", latest(f, "j"), put(f / "cy.json", {"schema": "journal/1", "accounts": [
+        {"account": "Equity:Draws:Cy", "role": "private", "name": "Cy draws"}]}))
+    raises("name the partner", ledger.result_split, ledger.Book.load(latest(f, "j")))
+
+    # an S corporation: distributions are equity of a company and close into retained earnings
+    s = tmp / "j-s"
+    s.mkdir()
+    ok("init", put(s / "init.json", {
+        "schema": "init/1", "title": "Owl Inc", "file_label": "s", "chart": "qbo", "new_business": True, "ledger": us,
+        "profile": {"country": "US", "legal_form": "S corporation", "basis": "cash", "vat_status": "none", "chart": "qbo",
+                    "company": True}}), "--out-dir", s)
+    sb = ledger.Book.load(s / "s-v1.beancount")
+    assert sb.role_of("Equity:Distributions") == "private" and "Equity:Owners-Draw" not in sb.accounts
+    assert sb.role_of("Liabilities:Credit-Card") == "card" and "Expenses:Payroll-Taxes" in sb.accounts
+    print("book J (US sales tax by state, use tax, S corp, partnership): ok")
+
+
+def book_k(tmp: Path) -> None:
+    """Exports for DATEV, BMD, QuickBooks and Xero; deductible shares; the draft Schedule C."""
+    f = tmp / "k"
+    f.mkdir()
+    eur = {"fiscal_year_from": "2026-01-01", "fiscal_year_to": "2026-12-31", "currency": "EUR"}
+    ok("init", put(f / "init.json", {
+        "schema": "init/1", "title": "Lange Studio", "file_label": "k", "chart": "skr03", "new_business": True, "ledger": eur,
+        "profile": {"country": "DE", "legal_form": "Einzelunternehmen", "basis": "cash", "vat_status": "regular",
+                    "vat_basis": "payment", "vat_period": "quarter", "chart": "skr03"}}), "--out-dir", f)
+    v = f / "k-v1.beancount"
+    vat = lambda regime, rate: {"regime": regime, "rate": rate, "source": "user"}
+    entry = lambda d, amount, lines, payee: {"date": d, "payee": payee, "confirmed": "user", "no_document": "test",
+                                             "lines": [{"account": "Assets:Bank:Giro", "amount": amount}] + lines}
+    fails("open Expenses:Travel:Nondeductible", "journal", v, put(f / "bad.json", {"schema": "journal/1", "entries": [
+        entry("2026-01-05", "-119.00", [{"account": "Expenses:Travel", "tax": vat("standard", "19"), "deductible": "0.7"}], "DB")]}))
+    ok("journal", v, put(f / "year.json", {"schema": "journal/1", "entries": [
+        entry("2026-01-10", "119.00", [{"account": "Income:Sales", "tax": vat("standard", "19")}], "Kunde; GmbH"),
+        entry("2026-01-11", "-119.00", [{"account": "Expenses:Office-Supplies", "tax": vat("standard", "19")}], "Staples"),
+        entry("2026-01-12", "-119.00", [{"account": "Expenses:Meals", "tax": vat("standard", "19"), "deductible": "0.7"}], "Lokal"),
+        entry("2026-01-13", "-100.00", [{"account": "Expenses:Software", "tax": vat("reverse_charge", "19")}], "Figma")]}))
+    k = latest(f, "k")
+    b = ledger.Book.load(k)
+    # 70 % of the meal is deductible; the VAT stays whole and the VAT summary still sees one base of 100
+    assert b.balance("Expenses:Meals") == D("100.00") and b.balance("Expenses:Meals:Nondeductible") == D("30.00")
+    base = [ln for ln in ledger.vat_schedule(b, b.fy_from, b.fy_to)["lines"] if ln["direction"] == "purchase"
+            and ln["regime"] == "standard"]
+    assert base[0]["base"] == D("200.00") and base[0]["input_tax"] == D("38.00"), base
+
+    fails("Beraternummer", "export", k, "--format", "datev", "--out-dir", f / "x")
+    out = ok("export", k, "--format", "datev", "--out-dir", f / "x", "--consultant", "1001", "--client", "42")
+    assert out["rows"] == 5 and any("not ready" in w for w in out["warnings"]), out
+    text = Path(out["written"]).read_bytes().decode("cp1252").split("\r\n")
+    assert text[0].startswith('"EXTF";700;21;"Buchungsstapel";13;') and ';1001;42;20260101;4;' in text[0], text[0]
+    assert text[1].startswith("Umsatz (ohne Soll/Haben-Kz);Soll/Haben-Kennzeichen;")
+    rows = [[c.strip('"') for c in ln.split(";")] for ln in text[2:] if ln]
+    assert all(len(r) == len(ledger.DATEV_COLUMNS) for r in rows)
+    got = [(r[0], r[1], r[6], r[7], r[8], r[9]) for r in rows]
+    assert got == [("119,00", "S", "1200", "8400", "", "1001"),   # 8400 is an Automatikkonto: no key
+                   ("119,00", "H", "1200", "4930", "9", "1101"),
+                   ("83,30", "H", "1200", "4650", "9", "1201"),
+                   ("35,70", "H", "1200", "4654", "9", "1201"),
+                   ("100,00", "H", "1200", "4806", "94", "1301")], got
+    assert rows[0][13] == "Kunde GmbH", rows[0][13]
+    eu = ledger.DATEV_EU_VAT
+    assert rows[4][eu] == "" and any("no EU VAT ID" in w for w in out["warnings"]), out["warnings"]
+    assert ledger.eu_vat_id("ie 6388047 v") == "IE6388047V" and ledger.eu_vat_id("12-3456789") == ""
+    figma = next(t for t in b.txns if t.payee == "Figma")
+    figma.meta["party_tax_id"] = "IE 6388047 V"
+    data, _ = ledger.export_datev(b, ledger.export_rows(b, [figma])[0], b.fy_from, b.fy_to, "1001", "42", 4)
+    row = data.decode("cp1252").split("\r\n")[2].split(";")
+    assert row[8] == '"94"' and row[eu] == '"IE6388047V"' and row[ledger.DATEV_EU_RATE] == "", row
+
+    out = ok("export", k, "--format", "bmd", "--out-dir", f / "x")
+    bmd = [ln.split(";") for ln in Path(out["written"]).read_bytes().decode("utf-8").split("\r\n") if ln]
+    dvo = ok("export", k, "--format", "dvo", "--out-dir", f / "dvo")
+    assert Path(dvo["written"]).read_bytes() == Path(out["written"]).read_bytes()
+    assert bmd[0] == ledger.BMD_HEADER
+    office, software = bmd[2], bmd[5]
+    assert office[1:4] == ["1200", "4930", "BK"] and office[8:13] == ["2", "2", "-119,00", "19", "19,00"], office
+    assert software[9:13] == ["79", "-100,00", "19", "19,00"] and bmd[1][8:13] == ["1", "1", "119,00", "19", "-19,00"], bmd[1]
+
+    out = ok("export", k, "--format", "qbo-journal", "--out-dir", f / "x")
+    import csv as _csv
+    qbo = list(_csv.reader(Path(out["written"]).read_text(encoding="utf-8").splitlines()))
+    assert qbo[0][:5] == ["Journal No.", "Journal Date", "Account Name", "Debits", "Credits"] and qbo[1][1] == "10/01/2026"
+    for jno in {r[0] for r in qbo[1:]}:
+        lines = [r for r in qbo[1:] if r[0] == jno]
+        assert sum(D(r[3] or 0) for r in lines) == sum(D(r[4] or 0) for r in lines), lines
+    fails("--tax-rate", "export", k, "--format", "xero-journal", "--out-dir", f / "x")
+    fails("--clearing-code", "export", k, "--format", "xero-journal", "--out-dir", f / "x", "--tax-rate", "No VAT")
+    out = ok("export", k, "--format", "xero-journal", "--out-dir", f / "x", "--tax-rate", "No VAT", "--clearing-code", "1360")
+    xero = list(_csv.reader(Path(out["written"]).read_text(encoding="utf-8").splitlines()))
+    assert xero[1][3:] == ["1360", "No VAT", "119.00"] and sum(D(r[5]) for r in xero[1:]) == 0, xero[1]
+
+    # an account that applies 19 % by itself cannot carry a 7 % sale
+    ok("journal", k, put(f / "seven.json", {"schema": "journal/1", "entries": [
+        entry("2026-01-20", "107.00", [{"account": "Income:Sales", "tax": vat("standard", "7")}], "Kunde")]}))
+    fails("applies 19 % VAT by itself", "export", latest(f, "k"), "--format", "datev", "--out-dir", f / "x",
+          "--consultant", "1001", "--client", "42")
+
+    # a US sole proprietor: Schedule C lines from the chart, half of the meals deductible
+    u = tmp / "k-us"
+    u.mkdir()
+    ok("init", put(u / "init.json", {
+        "schema": "init/1", "title": "Mia Design", "file_label": "u", "chart": "qbo", "new_business": True,
+        "ledger": {**eur, "currency": "USD"},
+        "profile": {"country": "US", "legal_form": "Sole proprietorship", "basis": "cash", "vat_status": "none", "chart": "qbo"}}),
+       "--out-dir", u)
+    cash = lambda d, amount, acct, payee, **kw: {"date": d, "payee": payee, "confirmed": "user", "no_document": "test",
+                                                 "lines": [{"account": "Assets:Bank:Checking", "amount": amount}, {"account": acct, **kw}]}
+    ok("journal", u / "u-v1.beancount", put(u / "year.json", {"schema": "journal/1", "entries": [
+        cash("2026-02-01", "1000.00", "Income:Sales", "Client"),
+        cash("2026-02-02", "-100.00", "Expenses:Meals", "Diner", deductible="0.5"),
+        cash("2026-02-03", "-50.00", "Expenses:Software", "Figma"),
+        cash("2026-02-04", "-200.00", "Expenses:Contractors", "Lee")]}))
+    ub = ledger.Book.load(latest(u, "u"))
+    form = ledger.build_report(ub, ub.fy_from, ub.fy_to, "none", "en")["tax_form"]
+    assert form["form"] == "Schedule C" and [(r["line"], r["amount"]) for r in form["lines"]] == [
+        ("1", D("1000.00")), ("11", D("200.00")), ("24b", D("50.00"))], form
+    assert form["lines"][1]["name"] == "Contract labor"
+    assert [i["account"] for i in form["unmapped"]] == ["Expenses:Software"]
+    assert [(i["account"], i["amount"]) for i in form["not_deductible"]] == [("Expenses:Meals:Nondeductible", D("50.00"))]
+    # a supplier account books under its Personenkonto, the number Billpal's contacts export carries
+    ok("journal", latest(f, "k"), put(f / "ap.json", {"schema": "journal/1",
+        "accounts": [{"account": "Liabilities:Payables:Druckerei", "name": "Druckerei", "personenkonto": "70001"}],
+        "entries": [{"date": "2026-02-01", "payee": "Druckerei", "confirmed": "user", "document": "billpal:print",
+                     "lines": [{"account": "Liabilities:Payables:Druckerei", "amount": "-119.00"},
+                               {"account": "Expenses:Office-Supplies", "tax": vat("standard", "19")}]}]}))
+    out = ok("export", latest(f, "k"), "--format", "datev", "--out-dir", f / "ap", "--consultant", "1001", "--client", "42",
+             "--from", "2026-02-01", "--to", "2026-02-01")
+    rows = [[c.strip('"') for c in ln.split(";")] for ln in Path(out["written"]).read_bytes().decode("cp1252").split("\r\n")[2:] if ln]
+    assert [(r[0], r[1], r[6], r[7], r[8]) for r in rows if r[6] == "70001"] == [("119,00", "H", "70001", "4930", "9")], rows
+    print("book K (exports, deductible shares, draft Schedule C): ok")
+
+
+def book_l(tmp: Path) -> None:
+    """Review flags, VAT due dates and payments, open questions, documents nobody paid."""
+    f = tmp / "l"
+    f.mkdir()
+    ok("init", put(f / "init.json", {
+        "schema": "init/1", "title": "Berg Design", "file_label": "l", "chart": "skr03", "new_business": True,
+        "ledger": {"fiscal_year_from": "2026-01-01", "fiscal_year_to": "2026-12-31", "currency": "EUR"},
+        "profile": {"country": "DE", "legal_form": "Einzelunternehmen", "basis": "cash", "vat_status": "regular",
+                    "vat_basis": "payment", "vat_period": "quarter", "chart": "skr03"}}), "--out-dir", f)
+    vat = {"regime": "standard", "rate": "19", "source": "user"}
+    entry = lambda d, amount, account, payee: {"date": d, "payee": payee, "confirmed": "user", "no_document": "test",
+                                               "lines": [{"account": "Assets:Bank:Giro", "amount": amount},
+                                                         {"account": account, "tax": vat}]}
+    ok("journal", f / "l-v1.beancount", put(f / "year.json", {"schema": "journal/1", "entries": [
+        entry("2026-01-10", "1190.00", "Income:Sales", "Kunde"),
+        entry("2026-01-15", "-11.90", "Expenses:Software", "Notion"),
+        entry("2026-02-15", "-11.90", "Expenses:Software", "Notion"),
+        entry("2026-03-15", "-14.28", "Expenses:Software", "Notion"),
+        entry("2026-04-15", "-14.28", "Expenses:Software", "Notion"),
+        entry("2026-03-20", "-59.50", "Expenses:Office-Supplies", "Staples"),
+        entry("2026-03-21", "-59.50", "Expenses:Office-Supplies", "Staples"),
+        entry("2026-02-01", "-1785.00", "Expenses:Office-Supplies", "Apple")],
+        "questions": [{"id": "laptop", "question": "Is the Apple purchase a laptop?", "proposal": "Book it as an asset"}]}))
+    b = ledger.Book.load(latest(f, "l"))
+    ready = ledger.readiness(b, None)
+    warns = {w["code"]: w for w in ready["warnings"]}
+    assert warns["double_charge"]["items"] == ["2026-03-20 and 2026-03-21: Staples 59.50"], warns["double_charge"]
+    assert warns["price_increase"]["items"] == ["Notion: 11.90 to 14.28 EUR on 2026-03-15"], warns["price_increase"]
+    assert warns["above_asset_limit"]["count"] == 1 and "Apple" in warns["above_asset_limit"]["items"][0]
+    assert warns["open_questions"]["items"] == ["laptop: Is the Apple purchase a laptop?"]
+    # Q1: 190.00 VAT on sales less 310.08 input VAT is a refund of 120.08, due on Friday 10 April
+    q1 = ledger.vat_schedule(b, b.fy_from, b.fy_to)["totals"][0]
+    assert q1["payable"] == D("-120.08") and q1["due"] == "2026-04-10", q1
+    # by year end Q2 adds 2.28 input VAT from the April Notion payment
+    assert "-122.36" in warns["vat_payments"]["message"], warns["vat_payments"]
+    assert ledger.status(b)["open_questions"][0]["id"] == "laptop"
+    ok("journal", latest(f, "l"), put(f / "refund.json", {"schema": "journal/1", "questions": [
+        {"id": "laptop", "answer": "Yes, a MacBook"}], "entries": [
+        {"date": "2026-04-20", "payee": "Finanzamt", "confirmed": "user", "no_document": "test",
+         "lines": [{"account": "Assets:Bank:Giro", "amount": "122.36"}, {"account": "Liabilities:Tax-Office"}]}]}))
+    b = ledger.Book.load(latest(f, "l"))
+    codes = {w["code"] for w in ledger.readiness(b, None)["warnings"]}
+    assert not codes & {"vat_payments", "open_questions"}, codes
+    assert b.questions["laptop"]["question"] and not ledger.status(b)["open_questions"]
+    # Dauerfristverlängerung moves the date a month; 10 May 2026 is a Sunday
+    b.profile["vat_extension"] = True
+    assert ledger.period_due(b, "2026-Q1", "quarter") == "2026-05-11"
+    fails("a new question needs the question", "journal", latest(f, "l"), put(f / "q.json", {
+        "schema": "journal/1", "questions": [{"id": "new", "answer": "x"}]}))
+
+    # cash basis: a cost document in the statement's span that no bank row pays
+    doc = {"id": "billpal:unpaid", "kind": "invoice", "direction": "in", "date": "2026-05-03", "total": "49.00",
+           "party": {"name": "Druckerei"}, "review_open": False}
+    pend = {"kind": "statement", "statements": [{"from": "2026-05-01", "to": "2026-05-31", "rows": []}]}
+    unpaid = ledger.candidates(b, pend, {"documents": [doc]})["documents_without_payment"]
+    assert [u["document"] for u in unpaid] == ["billpal:unpaid"] and unpaid[0]["total"] == "49.00", unpaid
+
+    # US: contractors paid by bank at or above the 1099-NEC floor
+    pay = lambda d, amount: {"date": d, "payee": "Jane Dev", "confirmed": "user", "no_document": "test",
+                             "lines": [{"account": "Assets:Bank:Checking", "amount": amount}, {"account": "Expenses:Contractors"}]}
+    ok("journal", latest(tmp / "c", "acme-2026"), put(f / "us.json", {"schema": "journal/1", "entries": [
+        pay("2026-03-01", "-1500.00"), pay("2026-04-01", "-600.00")]}))
+    u = ledger.Book.load(latest(tmp / "c", "acme-2026"))
+    flags = {c: items for c, _, items in ledger.review_flags(u, u.live_txns())}
+    assert flags["contractors_1099"] == ["Jane Dev: 2100.00"], flags
+    print("book L (review flags, VAT due dates and payments, questions, unpaid documents): ok")
 
 
 def main() -> int:
@@ -1445,6 +1895,11 @@ def main() -> int:
         book_e(tmp)
         book_f(tmp)
         book_g(tmp)
+        book_h(tmp)
+        book_i(tmp)
+        book_j(tmp)
+        book_k(tmp)
+        book_l(tmp)
         performance(tmp)
         written = sorted({p for p in tmp.rglob("*.beancount")})
         WRITTEN.extend(written)

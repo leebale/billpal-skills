@@ -13,7 +13,9 @@ from __future__ import annotations
 
 import argparse
 import csv
+import functools
 import hashlib
+import html
 import io
 import json
 import re
@@ -24,7 +26,7 @@ import xml.etree.ElementTree as ET
 from bisect import bisect_left, bisect_right
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from itertools import combinations, product
 from pathlib import Path
@@ -56,8 +58,9 @@ TAXED_REGIMES = {"standard", "reverse_charge", "intra_community", "import"}
 SELF_ASSESSED = {"reverse_charge", "intra_community"}
 CUSTOM_TYPES = {
     "ledger", "version", "profile", "rule", "csv_map", "asset", "statement", "closed",
-    "confirm", "review_hold", "allocation",
+    "confirm", "review_hold", "allocation", "question",
 }
+QUESTION_KEYS = {"id", "question", "proposal", "evidence", "answer"}
 CONFIRM_KINDS = {"booking", "tax", "document_review"}
 # Tax types a VAT registration covers. US sales tax is a cost, not input tax.
 VAT_LIKE = {"vat", "gst"}
@@ -65,7 +68,7 @@ PAYMENT_METHODS = {"direct_debit", "bank_transfer"}
 # Changing these after a close would move amounts between closed tax periods.
 PROFILE_FROZEN = {"basis", "vat_status", "vat_basis", "input_vat_basis", "vat_period", "country"}
 STATEMENT_KINDS = {"bank", "card", "cashbook", "processor"}
-EXTRACTIONS = {"camt", "csv", "model", "connector", "manual"}
+EXTRACTIONS = {"camt", "csv", "ofx", "model", "connector", "manual"}
 
 PROFILE_ENUMS = {
     "basis": {"cash", "accrual"},
@@ -77,7 +80,7 @@ PROFILE_ENUMS = {
     "language": {"de", "en"},
 }
 PROFILE_TEXT = {"country", "legal_form", "business", "chart", "notes", "tax_advisor"}
-PROFILE_BOOL = {"employees", "company"}
+PROFILE_BOOL = {"employees", "company", "vat_extension"}
 
 # ISO 4217 minor units. Everything not listed has 2.
 MINOR_UNITS_0 = {
@@ -99,13 +102,19 @@ COUNTRY_RULES = {
         {"from": 2020, "to": 2020, "gwg_limit": "800", "first_year": "monthly"},
         {"from": 2018, "to": 2019, "gwg_limit": "800", "first_year": "monthly", "vat_standard": "19"},
     ],
+    # The de minimis safe harbor, per item or invoice, for a business without audited statements.
+    "US": [{"from": 2016, "to": None, "gwg_limit": "2500"}],
 }
+# VAT return and payment due: months after the period ends, and the day (AT UStG § 21 Abs. 1; DE UStG § 18 Abs. 1).
+# A DE Dauerfristverlängerung (§ 46 UStDV, profile vat_extension) adds a month.
+VAT_DUE = {"AT": (2, 15), "DE": (1, 10)}
 
 # Text that banks put around the counterparty name. Removed for vendor grouping only.
 NOISE_WORDS = re.compile(
     r"\b(sepa|lastschrift|ueberweisung|gutschrift|dauerauftrag|kartenzahlung|zahlung|"
     r"pos|visa|mastercard|maestro|debit|credit|card|payment|eref|mref|cred|svwz|abwa|"
-    r"kref|ref|nr|online|bezahlung|einzug|basislastschrift|folgelastschrift|end|to)\b"
+    r"kref|ref|nr|online|bezahlung|einzug|basislastschrift|folgelastschrift|end|to|"
+    r"ach|ppd|ccd|store|purchase|recurring|checkcard)\b"
 )
 
 ACCOUNT_RE = re.compile(r"(?:Assets|Liabilities|Equity|Income|Expenses)(?::[A-Z0-9][A-Za-z0-9-]*)+")
@@ -476,6 +485,7 @@ class Book:
         self.ledger = None
         self.versions, self.statements, self.closed, self.confirms = [], [], [], []
         self.profile, self.rules, self.csv_maps, self.assets, self.allocations = {}, {}, {}, {}, {}
+        self.questions = {}
         self.accounts, self.txns, self.balances, self.holds = {}, [], [], []
         self.custom_errors = []
         for e in self.entries:
@@ -524,6 +534,8 @@ class Book:
                     self.confirms.append(v)
                 elif e.ctype == "review_hold":
                     self.holds.append(v)
+                elif e.ctype == "question":
+                    self.questions[str(v.get("id"))] = {**self.questions.get(str(v.get("id")), {}), **v}
         if self.ledger is None:
             raise LedgerError(f"{self.path.name}: no custom \"ledger\" entry. Is this a ledger written by this skill?")
         lg = self.ledger
@@ -581,8 +593,13 @@ class Book:
         if info["close"] and d >= info["close"]:
             raise LedgerError(f"account {account} was closed on {info['close']}")
 
-    def tax_account(self, role: str, regime: str, rate: Decimal) -> str:
+    def tax_account(self, role: str, regime: str, rate: Decimal, jurisdiction: str | None = None) -> str:
         cands = [(a, self.accounts[a]["meta"]) for a in self.accounts_with_role(role)]
+        general = [c for c in cands if not c[1].get("tax_jurisdiction")]
+        if jurisdiction:
+            cands = [c for c in cands if c[1].get("tax_jurisdiction") == jurisdiction] or general
+        else:
+            cands = general or cands
         r = rate_str(rate)
         for test in (
             lambda m: m.get("tax_regime") == regime and m.get("tax_rate") == r,
@@ -926,8 +943,12 @@ def validate_rule(rule: dict, book: Book) -> None:
     if not rid or not isinstance(rid, str):
         raise LedgerError("rule needs a text id")
     allowed = {"id", "text", "iban", "money", "amount_min", "amount_max", "on_account", "account", "tax",
-               "payee", "priority", "disabled", "needs_review", "note", "share", "private_account"}
+               "payee", "priority", "disabled", "needs_review", "note", "share", "private_account", "deductible"}
     match_spec(rule, book, f"rule {rid}", allowed)
+    if rule.get("deductible") is not None:
+        parse_share(rule["deductible"], f"rule {rid} deductible")
+        if rule.get("share"):
+            raise LedgerError(f"rule {rid}: deductible and share do not go together")
 
 
 ALLOCATION_KEYS = {"id", "text", "iban", "money", "amount_min", "amount_max", "account", "tax", "share", "basis",
@@ -995,8 +1016,10 @@ def private_account(book: Book, where: str) -> str:
 # ── Tax engine and booking lines ─────────────────────────────────────────────
 
 TAX_KEYS = {"type", "regime", "rate", "amount", "recoverable", "point", "report_codes", "source",
-            "confirmed", "direction", "base", "exemption_reason"}
-LINE_KEYS = {"account", "amount", "amount_is", "tax", "document", "allocations", "asset", "meta", "description"}
+            "confirmed", "direction", "base", "exemption_reason", "jurisdiction"}
+JURISDICTION_RE = re.compile(r"[A-Z]{2}(?:-[A-Z0-9]{1,20}){0,3}")
+LINE_KEYS = {"account", "amount", "amount_is", "tax", "document", "allocations", "asset", "meta", "description",
+             "deductible"}
 RESERVED_META = {"txn_id", "reverses", "allocations_json", "document", "asset", "opening"}
 
 
@@ -1036,7 +1059,11 @@ def normalize_tax(tax, book: Book, where: str, prec: int | None = None) -> dict:
     confirmed = tax.get("confirmed", source != "agent")
     if not isinstance(confirmed, bool):
         raise LedgerError(f"{where}: tax confirmed is true or false")
+    jur = tax.get("jurisdiction")
+    if jur is not None and not (isinstance(jur, str) and JURISDICTION_RE.fullmatch(jur)):
+        raise LedgerError(f"{where}: tax jurisdiction is a code like CA, NY or NY-NYC")
     return {
+        "jurisdiction": jur,
         "type": ttype, "regime": regime, "rate": rate, "recoverable": recoverable,
         "direction": tax.get("direction"), "point": opt_date(tax.get("point"), f"{where} tax point"),
         "codes": codes, "source": source, "confirmed": confirmed,
@@ -1074,8 +1101,32 @@ def line_meta(book: Book, line: dict, where: str) -> dict:
     return meta
 
 
-def expand_line(book: Book, line: dict, amount: Decimal, d: date, where: str, *, require_tax: bool,
-                default_point: date | None = None, cash_rows: bool = False) -> list[Posting]:
+def expand_line(book: Book, line: dict, amount: Decimal, d: date, where: str, **kw) -> list[Posting]:
+    """The postings of one line; a `deductible` share moves the rest of the base to <account>:Nondeductible."""
+    posts = _expand_line(book, line, amount, d, where, **kw)
+    if line.get("deductible") is None:
+        return posts
+    share = parse_share(line["deductible"], f"{where} deductible")
+    base = posts[0]
+    if not base.account.startswith("Expenses:") or line.get("allocations") or line.get("asset"):
+        raise LedgerError(f"{where}: deductible goes on an expense line without allocations or asset")
+    rest = f"{base.account}:Nondeductible"
+    if rest not in book.accounts:
+        raise LedgerError(f"{where}: open {rest} (under accounts) for the part that is not deductible")
+    book.require_open(rest, d)
+    if share == 1:
+        return posts
+    keep, m1, m2 = q(base.amount * share, book.prec), dict(base.meta), dict(base.meta)
+    for k in ("tax_base", "tax_amount"):
+        if k in base.meta:
+            whole = dec(base.meta[k])
+            part = q(whole * share, book.prec)
+            m1[k], m2[k] = fmt(part, book.prec), fmt(whole - part, book.prec)
+    return [Posting(base.account, keep, base.currency, m1), Posting(rest, base.amount - keep, base.currency, m2), *posts[1:]]
+
+
+def _expand_line(book: Book, line: dict, amount: Decimal, d: date, where: str, *, require_tax: bool,
+                 default_point: date | None = None, cash_rows: bool = False) -> list[Posting]:
     """Turn one booking line into postings: the base posting plus VAT postings."""
     acct = line.get("account")
     if not isinstance(acct, str) or not ACCOUNT_RE.fullmatch(acct):
@@ -1108,6 +1159,13 @@ def expand_line(book: Book, line: dict, amount: Decimal, d: date, where: str, *,
         base_meta["exemption_reason"] = t["exemption_reason"]
     tax_meta = {"tax_part": "tax", "tax_type": t["type"], "tax_regime": regime, "tax_rate": rate_str(rate),
                 "tax_direction": direction, "tax_point": point.isoformat()}
+    jur = t["jurisdiction"]
+    if jur:
+        base_meta["tax_jurisdiction"] = tax_meta["tax_jurisdiction"] = jur
+    if (regime in SELF_ASSESSED and direction == "purchase" and rate == 0 and t["type"] in VAT_LIKE
+            and book.profile.get("vat_status") in ("regular", "small_business")):
+        raise LedgerError(f"{where}: {regime} at 0 % books no VAT. The 0 % is what the supplier charged; the buyer "
+                          "owes the domestic rate. Give that rate, or leave tax off and pass --documents")
     if regime not in TAXED_REGIMES or rate == 0 or (regime in SELF_ASSESSED and direction == "sale"):
         return [Posting(acct, amount, cur, {**meta, **base_meta, "tax_base": fmt(amount, prec), "tax_amount": "0"})]
     if regime == "import":
@@ -1132,7 +1190,7 @@ def expand_line(book: Book, line: dict, amount: Decimal, d: date, where: str, *,
     if direction == "sale":
         return [
             Posting(acct, net, cur, {**meta, **base_meta, "tax_base": fmt(net, prec), "tax_amount": fmt(tax_amt, prec)}),
-            Posting(book.tax_account("vat_out", regime, rate), tax_amt, cur, tax_meta),
+            Posting(book.tax_account("vat_out", regime, rate, jur), tax_amt, cur, tax_meta),
         ]
     recov = t["recoverable"] if t["recoverable"] is not None else Decimal(
         1 if book.vat_regular and t["type"] in VAT_LIKE else 0)
@@ -1140,18 +1198,24 @@ def expand_line(book: Book, line: dict, amount: Decimal, d: date, where: str, *,
     out = [Posting(acct, net + tax_amt - rec, cur, {**meta, **base_meta, "tax_base": fmt(net, prec),
                                                      "tax_amount": fmt(tax_amt, prec), "recoverable": rate_str(recov)})]
     if rec:
-        out.append(Posting(book.tax_account("vat_in", regime, rate), rec, cur, {**tax_meta, "tax_part": "input_tax"}))
+        out.append(Posting(book.tax_account("vat_in", regime, rate, jur), rec, cur, {**tax_meta, "tax_part": "input_tax"}))
     if regime in SELF_ASSESSED:
-        out.append(Posting(book.tax_account("vat_out", regime, rate), -tax_amt, cur, tax_meta))
+        out.append(Posting(book.tax_account("vat_out", regime, rate, jur), -tax_amt, cur, tax_meta))
     return out
 
 
 def user_tax(lines, confirmed):
-    """A booking the user confirmed also confirms the tax treatment they saw in the preview."""
+    """A booking the user confirmed also confirms the tax treatment they saw in the preview, including a
+    derived reverse charge (the preview line names it)."""
     if confirmed != "user" or not isinstance(lines, list):
         return lines
-    return [{**ln, "tax": {**ln["tax"], "source": ln["tax"].get("source", "user")}}
-            if isinstance(ln, dict) and isinstance(ln.get("tax"), dict) else ln for ln in lines]
+    return [{**ln, "tax": confirm_tax(ln["tax"])} if isinstance(ln, dict) and isinstance(ln.get("tax"), dict) else ln
+            for ln in lines]
+
+
+def confirm_tax(tax: dict) -> dict:
+    tax = {**tax, "source": tax.get("source", "user")}
+    return {**tax, "confirmed": True} if tax["source"] == "derived" else tax
 
 
 def expand_lines(book: Book, lines, fixed: Decimal, d: date, where: str, *, require_tax: bool,
@@ -1235,7 +1299,7 @@ def write_next(book: Book, body: str, note: str) -> Book:
 
 
 ACCOUNT_SPEC_KEYS = {"account", "name", "code", "role", "personenkonto", "iban", "tax_regime", "tax_rate",
-                     "description", "date", "billpal_account"}
+                     "description", "date", "billpal_account", "tax_jurisdiction", "partner", "share", "auto_tax", "tax_line"}
 
 
 def open_text(book: Book, specs) -> str:
@@ -1261,11 +1325,24 @@ def open_text(book: Book, specs) -> str:
         if s.get("tax_regime") and s["tax_regime"] not in TAX_REGIMES:
             raise LedgerError(f"account {acct}: unknown tax_regime {s['tax_regime']!r}")
         meta = {}
-        for k in ("role", "code", "name", "personenkonto", "iban", "tax_regime", "tax_rate", "description", "billpal_account"):
+        for k in ("role", "code", "name", "personenkonto", "iban", "tax_regime", "tax_rate", "description", "billpal_account",
+                  "tax_jurisdiction", "partner", "share", "auto_tax", "tax_line"):
             if s.get(k) not in (None, ""):
                 meta[k] = s[k]
-        if "tax_rate" in meta:
-            meta["tax_rate"] = rate_str(parse_rate(meta["tax_rate"], f"account {acct} tax_rate"))
+        for k in ("tax_rate", "auto_tax"):
+            if k in meta:
+                meta[k] = rate_str(parse_rate(meta[k], f"account {acct} {k}"))
+        if "tax_line" in meta and not re.fullmatch(r"[A-Za-z0-9 .()-]{1,20}", str(meta["tax_line"])):
+            raise LedgerError(f"account {acct}: tax_line is a form line like 24b, or none")
+        if "tax_jurisdiction" in meta and not JURISDICTION_RE.fullmatch(str(meta["tax_jurisdiction"])):
+            raise LedgerError(f"account {acct}: tax_jurisdiction is a code like CA, NY or NY-NYC")
+        if "share" in meta:
+            share = dec(meta["share"], f"account {acct} share")
+            if not (0 < share <= 1 and meta.get("partner") and s.get("role") == "retained_earnings"):
+                raise LedgerError(f"account {acct}: share (above 0, at most 1) goes with partner on a retained_earnings account")
+            meta["share"] = format(share, "f")
+        if "partner" in meta and s.get("role") not in ("retained_earnings", "private"):
+            raise LedgerError(f"account {acct}: partner goes on a partner's capital (retained_earnings) or draw (private) account")
         if "iban" in meta:
             meta["iban"] = norm_iban(meta["iban"])
         d = opt_date(s.get("date"), f"account {acct} date") or book.fy_from
@@ -1316,6 +1393,12 @@ def custom_entries(book: Book, spec: dict) -> str:
         hd = parse_date(h.get("date"), f"review hold {h['document']} date")
         out.append(ser_custom(min(max(hd, book.fy_from), book.fy_to), "review_hold",
                               {"document": h["document"], "date": hd.isoformat(), "note": clean_text(h.get("note"))}))
+    for qn in spec.get("questions") or []:
+        if not isinstance(qn, dict) or set(qn) - QUESTION_KEYS or not isinstance(qn.get("id"), str) or not qn["id"]:
+            raise LedgerError(f"question {qn!r}: needs an id, and only {sorted(QUESTION_KEYS)}")
+        if qn["id"] not in book.questions and not qn.get("question"):
+            raise LedgerError(f"question {qn['id']}: a new question needs the question")
+        out.append(ser_custom(book.fy_from, "question", {k: clean_text(v) for k, v in qn.items()}))
     return "".join(out)
 
 
@@ -1336,11 +1419,25 @@ def load_chart(chart: str, lang: str, company: bool = False) -> list[dict]:
         if r.get("entity") and r["entity"] != ("company" if company else "owner"):
             continue
         spec = {"account": r["account"], "name": (r["name_de"] if lang == "de" else r["name_en"]) or r["name_en"]}
-        for k in ("role", "code", "tax_regime", "tax_rate"):
+        for k in ("role", "code", "tax_regime", "tax_rate", "auto_tax", "tax_line"):
             if r.get(k):
                 spec[k] = r[k]
         out.append(spec)
     return out
+
+
+@functools.cache
+def chart_rows(chart: str) -> dict:
+    with (HERE / "charts.csv").open(encoding="utf-8", newline="") as fh:
+        return {r["account"]: r for r in csv.DictReader(fh) if r["chart"] == chart}
+
+
+def account_attr(book: Book, acct: str, key: str) -> str:
+    """An account's own value, else the built-in chart's, so ledgers opened before a chart column existed get it."""
+    own = book.accounts.get(acct, {}).get("meta", {}).get(key)
+    if own:
+        return own
+    return (chart_rows(book.profile.get("chart") or "").get(acct) or {}).get(key) or ""
 
 
 INIT_KEYS = {"schema", "title", "file_label", "ledger", "profile", "chart", "accounts", "skip_accounts",
@@ -1447,15 +1544,19 @@ def validate_csv_map(cmap: dict) -> None:
     if not isinstance(cmap, dict) or not cmap.get("id"):
         raise LedgerError("csv_map needs an id")
     allowed = {"id", "delimiter", "encoding", "decimal", "thousands", "date_format", "skip_rows", "columns",
-               "order", "invert_sign", "note"}
+               "order", "invert_sign", "note", "header"}
     extra = set(cmap) - allowed
     if extra:
         raise LedgerError(f"csv_map {cmap['id']}: unknown fields {sorted(extra)}")
     cols = cmap.get("columns") or {}
     known = {"booking_date", "value_date", "amount", "debit", "credit", "text", "counterparty", "iban",
-             "reference", "balance", "bank_id", "currency", "original_amount", "original_currency"}
+             "reference", "balance", "bank_id", "currency", "original_amount", "original_currency", "check_number"}
     if set(cols) - known:
         raise LedgerError(f"csv_map {cmap['id']}: unknown columns {sorted(set(cols) - known)}")
+    if cmap.get("header") not in (None, True, False):
+        raise LedgerError(f"csv_map {cmap['id']}: header is true or false")
+    if cmap.get("header") is False and not all(c.isdigit() for spec in cols.values() for c in csv_headers(spec)):
+        raise LedgerError(f"csv_map {cmap['id']}: without a header row, columns are positions (\"1\" is the first)")
     for key, spec in cols.items():
         many = key == "counterparty" and isinstance(spec, list)
         if not (isinstance(spec, str) or spec is None or (many and spec and all(isinstance(c, str) and c for c in spec))):
@@ -1554,7 +1655,7 @@ def country_rule(book: Book, year: int) -> dict:
 # ── journal / reverse / close-period ─────────────────────────────────────────
 
 JOURNAL_KEYS = {"schema", "entries", "accounts", "rules", "csv_maps", "assets", "profile", "confirmations",
-                "review_holds", "allocations", "note"}
+                "review_holds", "allocations", "questions", "note"}
 ENTRY_KEYS = {"date", "payee", "narration", "lines", "meta", "confirmed", "classified_by", "document",
               "documents", "no_document", "document_review", "opening"}
 
@@ -1751,6 +1852,18 @@ def has_document(t: Entry) -> bool:
     return False
 
 
+def money_amount(book: Book, t: Entry) -> Decimal:
+    return sum((p.amount for p in t.postings if book.role_of(p.account) in MONEY_ROLES), Decimal(0))
+
+
+def missing_receipt_txns(book: Book, scope) -> list[Entry]:
+    """Money movements with neither a document nor a reason, own transfers excepted."""
+    return [t for t in scope
+            if any(book.role_of(p.account) in MONEY_ROLES for p in t.postings)
+            and not all(book.role_of(p.account) in TRANSFER_ROLES for p in t.postings)
+            and not has_document(t)]
+
+
 def readiness(book: Book, through: date | None, year_end: bool = False, folder: Path | None = None) -> dict:
     through = book.fy_to if year_end else (through or book.fy_to)
     fails, warns = [], []
@@ -1849,11 +1962,8 @@ def readiness(book: Book, through: date | None, year_end: bool = False, folder: 
         fail("fork", "Two different versions exist. Merge them before going on", scan["forks"])
     if scan["pending"]:
         fail("pending", "Staged files that were never committed", scan["pending"])
-    money = lambda t: sum((p.amount for p in t.postings if book.role_of(p.account) in MONEY_ROLES), Decimal(0))
-    no_doc = [t for t in scope
-              if any(book.role_of(p.account) in MONEY_ROLES for p in t.postings)
-              and not all(book.role_of(p.account) in TRANSFER_ROLES for p in t.postings)
-              and not has_document(t)]
+    money = lambda t: money_amount(book, t)
+    no_doc = missing_receipt_txns(book, scope)
     if no_doc:
         warn("missing_receipts", "Bookings without a receipt or invoice",
              [f"{t.date} {t.payee} {money(t)} ({t.meta.get('txn_id')})" for t in no_doc])
@@ -1875,6 +1985,15 @@ def readiness(book: Book, through: date | None, year_end: bool = False, folder: 
     if alloc_gaps:
         warn("allocation_missing", "Recurring costs with a period where nothing was allocated. "
                                    "Run allocate on the private statement, or note why", alloc_gaps)
+    for code, message, items in review_flags(book, scope):
+        if items:
+            warn(code, message, items)
+    gap = vat_payment_gap(book, through)
+    if gap:
+        warn("vat_payments", gap)
+    open_q = [f"{qn['id']}: {qn.get('question')}" for qn in book.questions.values() if not qn.get("answer")]
+    if open_q:
+        warn("open_questions", "Questions for the user or the accountant that are still open", open_q)
     flat = {t.meta["flat_rate"] for t in scope if t.meta.get("flat_rate")}
     both = sorted(flat & {(book.allocations.get(aid) or {}).get("topic") for aid in booked})
     if both:
@@ -1887,12 +2006,106 @@ def readiness(book: Book, through: date | None, year_end: bool = False, folder: 
             fail("depreciation", "Depreciation for the year is not booked", open_dep)
         if book.closed_through != book.fy_to:
             fail("not_closed", f"Close the year first (close-period --through {book.fy_to})")
-        if len(book.accounts_with_role("retained_earnings")) != 1:
-            fail("no_result_account", "Need exactly one retained_earnings account for the rollover")
+        try:
+            result_split(book)
+        except LedgerError as exc:
+            fail("no_result_account", str(exc))
     return {"ready": not fails, "through": through.isoformat(), "year_end": year_end,
             "fails": fails, "warnings": warns, "missing_receipts_count": len(no_doc),
             "missing_receipts_by_party": [{"payee": k, "count": c, "amount": a} for k, (c, a) in
                                           sorted(by_party.items(), key=lambda kv: (-abs(kv[1][1]), kv[0]))]}
+
+
+REVIEW_CODES = {"double_charge", "price_increase", "above_asset_limit", "contractors_1099"}
+ASSETISH = re.compile(r"Equipment|Hardware|Computer|Office|Supplies|Materials|Tools|Furniture|Software|Other")
+
+
+def review_flags(book: Book, scope: list) -> list[tuple[str, str, list]]:
+    """What an accountant would ask about. Warnings only: each one can be fine."""
+    cur, out = book.currency, []
+    pays = []
+    for t in scope:
+        money = [p for p in t.postings if book.role_of(p.account) in MONEY_ROLES]
+        if not t.meta.get("opening") and t.payee and len(money) == 1 and money[0].amount < 0:
+            pays.append((t, norm_text(t.payee), -money[0].amount, book.role_of(money[0].account)))
+    pays.sort(key=lambda x: (x[1], x[0].date))
+    dup = [f"{a[0].date} and {b[0].date}: {a[0].payee} {a[2]}" for a, b in zip(pays, pays[1:])
+           if a[1] == b[1] and a[2] == b[2] and (b[0].date - a[0].date).days <= 3]
+    out.append(("double_charge", "The same payee and amount twice within three days: two purchases, or a charge to reclaim?", dup))
+    # ponytail: a step up after two equal payments; the latest such step per payee is shown.
+    by_payee = defaultdict(list)
+    for t, key, amount, _ in pays:
+        by_payee[key].append((t, amount))
+    up = []
+    for xs in by_payee.values():
+        steps = [i for i in range(2, len(xs)) if xs[i][1] > xs[i - 1][1] == xs[i - 2][1]]
+        if steps:
+            i = steps[-1]
+            up.append(f"{xs[i][0].payee}: {xs[i - 1][1]} to {xs[i][1]} {cur} on {xs[i][0].date}")
+    out.append(("price_increase", "A recurring payment that went up", up))
+    limit = country_rule(book, book.fy_from.year).get("gwg_limit")
+    if limit:
+        # ponytail: only accounts whose name suggests equipment; a big "Repairs" bill is not flagged.
+        big = [f"{t.date} {t.payee} {p.account} {base}" for t in scope if not t.meta.get("opening")
+               for p in t.postings if p.account.startswith("Expenses:") and ASSETISH.search(p.account) and not p.meta.get("asset")
+               for base in [dec(p.meta["tax_base"]) if book.vat_regular and "tax_base" in p.meta else p.amount]
+               if base > dec(limit)]
+        out.append(("above_asset_limit", f"Expenses above the {limit} {cur} limit for low-value assets: "
+                                         "equipment that lasts several years is an asset", big))
+    if book.profile.get("country") == "US":
+        floor = Decimal(2000 if book.fy_from.year >= 2026 else 600)
+        paid = defaultdict(Decimal)
+        for t, key, amount, role in pays:
+            if role in ("bank", "cash") and any(account_attr(book, p.account, "tax_line") == "11" or "Contractors" in p.account
+                                                for p in t.postings):
+                paid[t.payee] += amount
+        out.append(("contractors_1099", f"Contractors paid {floor} USD or more by bank transfer or check: 1099-NEC "
+                                        "candidates (ask for a W-9; card and PayPal payments are reported on 1099-K)",
+                    [f"{k}: {v}" for k, v in sorted(paid.items()) if v >= floor]))
+    return out
+
+
+def period_due(book: Book, key: str, by: str) -> str | None:
+    rule = VAT_DUE.get(book.profile.get("country") or "")
+    if not rule or by not in ("month", "quarter"):
+        return None
+    end_month = int(key[5:7]) if by == "month" else int(key[-1]) * 3
+    months = rule[0] + (1 if book.profile.get("vat_extension") else 0)
+    first = add_months(date(int(key[:4]), end_month, 1), months)
+    d = date(first.year, first.month, rule[1])
+    # ponytail: moves past weekends only; a public holiday on the due date is not known here.
+    while d.weekday() >= 5:
+        d += timedelta(days=1)
+    return d.isoformat()
+
+
+def vat_payment_gap(book: Book, through: date) -> str | None:
+    """VAT payable for the periods due by `through` against the payments to the tax office account."""
+    if not book.vat_regular or not VAT_DUE.get(book.profile.get("country") or ""):
+        return None
+    # Payments go to the tax office account or straight to a VAT account (lines without tax_part).
+    settles = lambda p: p.account == "Liabilities:Tax-Office" or (
+        book.role_of(p.account) in ("vat_in", "vat_out") and not p.meta.get("tax_part"))
+    totals = [t for t in vat_schedule(book, book.fy_from, book.fy_to)["totals"] if t["due"]]
+    opening, paid = Decimal(0), Decimal(0)
+    for t in book.live_txns():
+        if t.date > through:
+            continue
+        if t.meta.get("opening"):
+            opening += sum((p.amount for p in t.postings if settles(p)), Decimal(0))
+        elif any(book.role_of(p.account) in MONEY_ROLES for p in t.postings):
+            paid += sum((p.amount for p in t.postings if settles(p)), Decimal(0))
+    owed = sum((t["payable"] for t in totals if parse_date(t["due"]) <= through), Decimal(0)) - opening
+    # payments made early for a period that has ended but is not due yet are fine too
+    fine, running = {owed}, owed
+    for t in totals:
+        if parse_date(t["due"]) > through and parse_date(t["due"]) - timedelta(days=75) <= through:
+            running += t["payable"]
+            fine.add(running)
+    if paid in fine:
+        return None
+    return (f"VAT due by {through} is {owed} {book.currency}, last year's balance included; payments to the tax office are "
+            f"{paid}. A gap usually means costs paid from another account are missing, or a payment is booked elsewhere")
 
 
 def full_periods(lo: date, hi: date, every: str) -> list[tuple[date, date]]:
@@ -1934,6 +2147,7 @@ def status(book: Book) -> dict:
         "closed_through": book.closed_through, "money_accounts": accts,
         "newest_in_folder": scan["latest"], "is_newest": scan["latest"] in (None, book.path.name),
         "forks": scan["forks"], "pending": scan["pending"], "rules": len(book.rules), "assets": len(book.assets),
+        "open_questions": [qn for qn in book.questions.values() if not qn.get("answer")],
     }
 
 
@@ -2068,14 +2282,20 @@ def from_camt(data: bytes, book: Book) -> dict:
     return {"schema": "statement/1", "statements": statements, "skipped_not_booked": skipped}
 
 
+CURRENCY_MARKS = re.compile(r"[$€£¥]|^[A-Z]{3}|[A-Z]{3}$")
+
+
 def _csv_amount(text: str, cmap: dict) -> Decimal:
-    s = (text or "").strip().replace("\u00a0", "").replace(" ", "")
+    s = (text or "").strip().replace("\u00a0", "").replace(" ", "").replace("\u2212", "-")
+    s = CURRENCY_MARKS.sub("", s)
     if not s:
         return Decimal(0)
     neg = s.endswith("-") or (s.startswith("(") and s.endswith(")"))
     s = s.strip("()").rstrip("-")
     if cmap.get("thousands"):
         s = s.replace(cmap["thousands"], "")
+    elif cmap.get("decimal", ".") == "." and re.fullmatch(r"-?\d{1,3}(,\d{3})+(\.\d+)?", s):
+        s = s.replace(",", "")
     s = s.replace(cmap.get("decimal", "."), ".")
     value = dec(s, f"CSV amount {text!r}")
     return -value if neg else value
@@ -2088,7 +2308,12 @@ def from_csv(data: bytes, book: Book, map_id: str, account: str, start: str, end
         raise LedgerError(f"no csv_map {map_id!r} in the ledger. Add one with journal first")
     text = data.decode(cmap.get("encoding", "utf-8-sig"))
     lines = text.splitlines()[int(cmap.get("skip_rows", 0)):]
-    reader = csv.DictReader(lines, delimiter=cmap.get("delimiter", ","))
+    delim = cmap.get("delimiter", ",")
+    names = None
+    if cmap.get("header") is False:
+        width = max((len(r) for r in csv.reader(lines, delimiter=delim)), default=0)
+        names = [str(i + 1) for i in range(width)]
+    reader = csv.DictReader(lines, fieldnames=names, delimiter=delim)
     cols = cmap["columns"]
     missing = [c for spec in cols.values() for c in csv_headers(spec) if c not in (reader.fieldnames or [])]
     if missing:
@@ -2134,12 +2359,18 @@ def from_csv(data: bytes, book: Book, map_id: str, account: str, start: str, end
             "bank_id": get("bank_id") or None,
             "balance": format(_csv_amount(bal, cmap), "f") if bal else None,
             **({"fx": fx} if fx else {}),
+            **({"check_number": get("check_number")} if get("check_number") else {}),
         })
     if cmap.get("order") == "desc":
         rows.reverse()
+    lo, hi = parse_date(start, "--from").isoformat(), parse_date(end, "--to").isoformat()
+    rows = [r for r in rows if not r["booking_date"] or lo <= r["booking_date"] <= hi]
     if rows and all(r["balance"] for r in rows):
-        opening = opening or format(dec(rows[0]["balance"]) - dec(rows[0]["amount"]), "f")
-        closing = closing or rows[-1]["balance"]
+        col_open, col_close = dec(rows[0]["balance"]) - dec(rows[0]["amount"]), dec(rows[-1]["balance"])
+        for name, given, col in (("--opening", opening, col_open), ("--closing", closing, col_close)):
+            if given not in (None, "") and dec(given) != col:
+                raise LedgerError(f"{name} {given} differs from the balance column ({col}) for this period. Leave {name} out")
+        opening, closing = format(col_open, "f"), format(col_close, "f")
     sid = source_id or "csv:" + sha256_bytes(data)[:16]
     return {"schema": "statement/1", "statements": [{
         "source_id": sid, "account": account, "currency": book.currency, "kind": "bank",
@@ -2147,12 +2378,76 @@ def from_csv(data: bytes, book: Book, map_id: str, account: str, start: str, end
     }]}
 
 
+OFX_TAG = re.compile(r"<([A-Z0-9.]+)>([^<\r\n]*)")
+
+
+def _ofx_fields(block: str) -> dict:
+    """Leaf values of one OFX aggregate. OFX 1.x leaves leaf tags unclosed, 2.x closes them; both work."""
+    out = {}
+    for tag, value in OFX_TAG.findall(block):
+        out.setdefault(tag, html.unescape(value.strip()))
+    return out
+
+
+def _ofx_date(value: str, where: str) -> str:
+    return parse_date(f"{value[:4]}-{value[4:6]}-{value[6:8]}" if len(value) >= 8 else "", where).isoformat()
+
+
+def from_ofx(data: bytes, book: Book, account: str, source_id: str | None) -> dict:
+    """OFX / QFX / QBO bank or credit card download. Amounts are signed by the bank: negative is money out
+    (on a card, a charge)."""
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        text = data.decode("cp1252")
+    statements = []
+    for kind, body in re.findall(r"<(STMTRS|CCSTMTRS)>(.*?)</\1>", text, re.S):
+        head = _ofx_fields(re.sub(r"<STMTTRN>.*?</STMTTRN>", "", body, flags=re.S))
+        cur = head.get("CURDEF") or book.currency
+        if cur.upper() != book.currency:
+            raise LedgerError(f"OFX statement is in {cur}, the ledger is in {book.currency}")
+        rows = []
+        for n, block in enumerate(re.findall(r"<STMTTRN>(.*?)</STMTTRN>", body, re.S), 1):
+            f = _ofx_fields(block)
+            where = f"OFX transaction {n}"
+            day = _ofx_date(f.get("DTPOSTED", ""), f"{where} DTPOSTED")
+            rows.append({
+                "booking_date": day, "value_date": _ofx_date(f["DTUSER"], f"{where} DTUSER") if f.get("DTUSER") else day,
+                "amount": format(_csv_amount(f.get("TRNAMT"), {}), "f"),
+                "text": clean_text(f.get("MEMO") or f.get("NAME")), "counterparty": clean_text(f.get("NAME") or f.get("PAYEE")),
+                "iban": "", "reference": clean_text(f.get("REFNUM")), "bank_id": f.get("FITID") or None,
+                **({"check_number": f["CHECKNUM"]} if f.get("CHECKNUM") else {}),
+            })
+        rows.sort(key=lambda r: r["booking_date"])
+        bal = re.search(r"<LEDGERBAL>(.*?)</LEDGERBAL>", body, re.S)
+        closing = _csv_amount(_ofx_fields(bal.group(1)).get("BALAMT"), {}) if bal else None
+        total = sum((dec(r["amount"]) for r in rows), Decimal(0))
+        dates = [r["booking_date"] for r in rows]
+        start = _ofx_date(head["DTSTART"], "OFX DTSTART") if head.get("DTSTART") else min(dates, default=None)
+        end = _ofx_date(head["DTEND"], "OFX DTEND") if head.get("DTEND") else max(dates, default=None)
+        acct_id = head.get("ACCTID", "")
+        sid = source_id or f"ofx:{acct_id[-4:]}:{start}:{end}:" + sha256_bytes(body.encode("utf-8"))[:8]
+        statements.append({
+            "source_id": sid if len(statements) == 0 else f"{sid}:{len(statements)}",
+            "account": account, "currency": book.currency, "kind": "card" if kind == "CCSTMTRS" else "bank",
+            "from": start, "to": end,
+            # ponytail: OFX gives only the balance at the end of the download, so the opening is derived from it;
+            # stage still checks it against the ledger and refuses a gap.
+            "opening": None if closing is None else format(closing - total, "f"),
+            "closing": None if closing is None else format(closing, "f"),
+            "extraction": "ofx", "rows": rows,
+        })
+    if not statements:
+        raise LedgerError("no bank or credit card statement in this OFX file")
+    return {"schema": "statement/1", "statements": statements}
+
+
 # ── Stage and commit statements ──────────────────────────────────────────────
 
 STATEMENT_KEYS = {"source_id", "account", "iban", "currency", "kind", "from", "to", "opening", "closing",
                   "extraction", "count", "confirmed_by_user", "rows", "note", "file"}
 ROW_KEYS = {"booking_date", "value_date", "amount", "text", "counterparty", "iban", "reference", "bank_id",
-            "balance", "fx", "method"}
+            "balance", "fx", "method", "check_number"}
 
 
 def row_key(account: str, r: dict, prec: int) -> str:
@@ -2172,11 +2467,49 @@ def is_fee_row(r: dict) -> bool:
     return bool(BANK_CHARGE.search(clean_text(r.get("text"))) or FEE_TEXT.search(norm_text(r.get("text"))))
 
 
+# ponytail: text heuristic for card payments on a bank statement; a bank wording outside this list falls
+# back to "skonto_unconfirmed", which still asks the user. Extend the list when one shows up.
+CARD_TEXT = re.compile(r"card transaction|kartenzahlung|purchase authori[sz]ed|checkcard|debit card|\bpos\b|"
+                       r"\bbankomat\b|\bmaestro\b")
+
+
+def is_card_row(st: dict, r: dict) -> bool:
+    return st.get("kind") == "card" or bool(r.get("fx")) or bool(CARD_TEXT.search(norm_text(r.get("text"))))
+
+
+# US bank wording around the merchant name (Chase, Wells Fargo, Bank of America).
+ACH_ORIG = re.compile(r"\bORIG CO NAME:\s*(.+?)(?=\s+(?:ORIG ID|CO ENTRY|DESC DATE|SEC|TRACE|IND ID|IND NAME|EED|DES:|INDN:|CO ID:|PPD ID:|CCD ID:|WEB ID:)|$)", re.I)
+CARD_PREFIX = re.compile(r"^(?:(?:RECURRING\s+)?(?:PURCHASE|PAYMENT)(?:\s+RETURN)?\s+AUTHORI[SZ]ED\s+ON\s+\d\d/\d\d|"
+                         r"CHECKCARD\s+\d{4}|(?:DEBIT\s+CARD|POS)\s+(?:PURCHASE|DEBIT)(?:\s+-)?)\s+", re.I)
+ACH_TAIL = re.compile(r"\s+(?:DES|ID|INDN|CO ID|PPD ID|CCD ID|WEB ID):.*$", re.I)
+PROCESSOR_PREFIX = re.compile(r"^(?:SQ|TST|SP|PP|PAYPAL|IN)\s?\*\s*", re.I)
+CHECK_TEXT = re.compile(r"^(?:CHECK|CHK|CHEQUE)\s*#?\s*(\d+)\b", re.I)
+
+
+def merchant_text(text: str) -> str:
+    """The merchant part of a US bank description; other texts come back unchanged."""
+    s = clean_text(text)
+    orig = ACH_ORIG.search(s)
+    if orig:
+        return orig.group(1).strip()
+    s = ACH_TAIL.sub("", CARD_PREFIX.sub("", s))
+    s = PROCESSOR_PREFIX.sub("", s)
+    return re.sub(r"\*\S*", " ", s).strip()
+
+
+def check_number(r: dict) -> str:
+    m = CHECK_TEXT.match(clean_text(r.get("text")))
+    return str(r.get("check_number") or (m.group(1) if m else "")).strip()
+
+
 def vendor_key(r: dict) -> str:
     fee = is_fee_row(r)
     if r.get("iban") and not fee:
         return "iban:" + norm_iban(r["iban"])
-    t = NOISE_WORDS.sub(" ", norm_text(r.get("text") if fee else r.get("counterparty") or r.get("text")))
+    # ponytail: every check is its own group; the payee is not on the statement, so ask per check.
+    if check_number(r) and not r.get("counterparty"):
+        return "check:" + check_number(r)
+    t = NOISE_WORDS.sub(" ", norm_text(r.get("text") if fee else merchant_text(r.get("counterparty") or r.get("text"))))
     words = [w for w in re.sub(r"\b\w*\d\w*\b", " ", t).split() if len(w) > 1][:3]
     return "text:" + (" ".join(words) or "?")
 
@@ -2467,7 +2800,8 @@ def stage_one(book: Book, st: dict, si: int, staged: dict) -> dict:
             o["suggested"] = None if rule is None else {
                 "rule": rule["id"], "payee": rule.get("payee"),
                 "lines": share_lines(book, rule, dec(o["amount"])) if rule.get("share") else
-                         [{"account": rule["account"], **({"tax": rule["tax"]} if rule.get("tax") else {})}],
+                         [{"account": rule["account"], **({"tax": rule["tax"]} if rule.get("tax") else {}),
+                           **({"deductible": rule["deductible"]} if rule.get("deductible") is not None else {})}],
                 "confirmed": "no" if rule.get("needs_review") else "rule", "classified_by": f"rule:{rule['id']}",
             }
             staged[acct].append((parse_date(o["booking_date"]), dec(o["amount"])))
@@ -2553,10 +2887,8 @@ def build_commit(book: Book, pending: dict, decisions: dict | None, documents: d
     if pending.get("kind") != "statement":
         raise LedgerError("this pending file holds documents. Use commit-documents")
     decisions = decisions or {}
-    docs = {}
-    for raw in (documents or {}).get("documents") or []:
-        nd = norm_doc(raw, book, need_rate=False)
-        docs[nd["id"]] = nd
+    parsed, bad = parse_docs(book, (documents or {}).get("documents"))
+    docs, unreadable = {d["id"]: d for d in parsed}, {b["document"]: b["reason"] for b in bad}
     full_rows = defaultdict(list)
     # Documents `candidates` found in Billpal Review are held by the commit itself, not by the model.
     known = {h["document"] for h in book.holds} | {h.get("document") for h in decisions.get("review_holds") or []}
@@ -2599,6 +2931,9 @@ def build_commit(book: Book, pending: dict, decisions: dict | None, documents: d
             if not source or not source.get("lines"):
                 unresolved.append(f"{r['ref']} {r['booking_date']} {r['amount']} {r.get('counterparty') or r.get('text')}")
                 continue
+            for doc_id in [source["document"]] if source.get("document") else source.get("documents") or []:
+                if doc_id in unreadable:
+                    raise LedgerError(f"{r['ref']}: document {doc_id} could not be read: {unreadable[doc_id]}")
             txns.append(statement_txn(work, st, r, source, docs))
             booked += 1
             for doc_id in [source["document"]] if source.get("document") else source.get("documents") or []:
@@ -2679,20 +3014,26 @@ def statement_txn(book: Book, st: dict, r: dict, source: dict, docs: dict | None
                                                   "document_review", "meta") if source.get(k) is not None}
                       | {"confirmed": source.get("confirmed", "no")}, where)
     meta.update({"source_statement": st["source_id"], "source_row": str(r["seq"]), "row_key": r["row_key"]})
-    for k in ("bank_id", "value_date", "counterparty", "iban", "reference"):
+    for k in ("bank_id", "value_date", "counterparty", "iban", "reference", "check_number"):
         if r.get(k):
             meta[k] = r[k]
     if row_method(r):
         meta["payment_method"] = row_method(r)
     if r.get("fx"):
         meta["fx_json"] = r["fx"]
+    # ponytail: one link per booking; a batch payment of several documents keeps only their ids.
+    if len(attached) == 1 and attached[0].get("url"):
+        meta["document_url"] = attached[0]["url"]
+    tax_ids = {(x["party"] or {}).get("tax_id") for x in attached}
+    if len(tax_ids) == 1 and None not in tax_ids:
+        meta["party_tax_id"] = clean_text(tax_ids.pop())
     if source.get("match"):
         meta["match"] = source["match"]
     if source.get("settles") not in (None, True):
         raise LedgerError(f"{where}: settles is true or left out")
     if source.get("settles"):
         meta["settles"] = "yes"
-    payee = payee or r.get("counterparty") or (r.get("text") or "")[:60]
+    payee = payee or merchant_text(r.get("counterparty") or r.get("text") or "")[:60]
     narration = source.get("narration") or r.get("text") or ""
     flag = "!" if meta["confirmed"] == "no" else "*"
     return ser_txn(d, flag, payee, narration[:200], meta, posts, book.prec)
@@ -2723,6 +3064,12 @@ def from_billpal(data) -> dict:
         if g.get("error"):
             notes.append(f"{did}: {g['error']}, left out")
             continue
+        if g.get("status") == "excluded":
+            who = (g.get("supplier") or g.get("customer") or {})
+            notes.append(f"{did}: excluded in Billpal ({who.get('brand_name') or who.get('company_name') or 'no party'}, "
+                         f"{g.get('invoice_date') or 'no date'}, {g.get('total_amount')} {g.get('currency') or ''}), "
+                         "left out. Ask whether to include it")
+            continue
         direction = {"incoming": "in", "outgoing": "out"}.get(g.get("direction"))
         if direction is None or not g.get("invoice_date"):
             notes.append(f"{did}: no direction or date in Billpal, left out. Ask the user to fix it in Billpal")
@@ -2738,13 +3085,16 @@ def from_billpal(data) -> dict:
                  if b.get("scheme") == "iban"] + contact.get("ibans", [])
         party = {"name": p.get("company_name") or p.get("brand_name"), "iban": next((i for i in ibans if i), None),
                  "personenkonto": contact.get("account_code")}
-        party |= {k: p[k] for k in ("company_name", "brand_name", "country", "tax_id_country") if p.get(k)}
+        party |= {k: p[k] for k in ("company_name", "brand_name", "country", "tax_id", "tax_id_country") if p.get(k)}
         if p.get("id") and p.get("id") not in contacts:
             notes.append(f"{did}: add get_contact for {party['name']} to read its Personenkonto")
         taxes = [{"type": t.get("tax_type"), "rate": rate(t.get("tax_rate")), "base": m(t.get("tax_base")),
                   "amount": m(t.get("tax_amount")), "exemption_reason": t.get("exemption_reason"),
                   "regime": t.get("tax_regime") or ("reverse_charge" if g.get("reverse_charge") else None)}
                  for t in g.get("tax_lines") or []]
+        if g.get("reverse_charge") and not taxes:
+            taxes = [{"type": "vat", "regime": "reverse_charge", "rate": None, "base": m(g.get("net_amount")),
+                      "amount": None, "exemption_reason": None}]
         lines = []
         for li in g.get("line_items") or []:
             tax = {"type": li.get("tax_type"), "regime": li.get("tax_regime"), "rate": rate(li.get("tax_rate")),
@@ -2771,7 +3121,7 @@ def from_billpal(data) -> dict:
                "due_date": g.get("payment_due_date"), "currency": (g.get("currency") or "").upper() or None,
                "party": party, "total": None if total is None else m(Decimal(str(total)) + Decimal(str(tip))),
                "discount": format(abs(Decimal(str(g["discount"]))), "f") if g.get("discount") else None,
-               "taxes": taxes, "lines": lines, "linked": [], "source": "billpal",
+               "taxes": taxes, "lines": lines, "linked": [], "source": "billpal", "url": g.get("app_url"),
                "review_open": g.get("status") == "review" or bool(g.get("review_notes"))}
         for ld in g.get("linked_documents") or []:
             peer = f"billpal:{ld.get('id')}"
@@ -2787,7 +3137,17 @@ def from_billpal(data) -> dict:
 
 DOC_KEYS = {"schema", "id", "kind", "direction", "number", "date", "due_date", "tax_point", "currency", "fx_rate",
             "party", "total", "discount", "taxes", "lines", "applies_to", "linked", "review_open", "terms", "source",
-            "note"}
+            "note", "url"}
+URL_RE = re.compile(r"https?://[^\s\"'<>]+")
+
+
+def doc_url(value, where: str) -> str | None:
+    """Where the document opens (Billpal's app_url). Only plain http(s), since the report turns it into a link."""
+    if value in (None, ""):
+        return None
+    if not isinstance(value, str) or not URL_RE.fullmatch(value):
+        raise LedgerError(f"{where}: url must be an http(s) address")
+    return value
 DOC_LINE_KEYS = {"description", "amount", "amount_is", "tax", "account", "account_code"}
 DOC_DECISION_KEYS = {"id", "decision", "party_account", "lines", "confirmed", "classified_by", "applies_to",
                      "review_resolved", "party_confirmed"}
@@ -2817,6 +3177,7 @@ def norm_doc(doc: dict, book: Book, need_rate: bool = True) -> dict:
         "total": None if doc.get("total") is None else money(doc["total"], prec, f"{where} total"),
         "discount": None if doc.get("discount") in (None, "") else abs(money(doc["discount"], prec, f"{where} discount")) or None,
         "party": doc.get("party") or {},
+        "url": doc_url(doc.get("url"), where),
     }
     if cur != book.currency:
         if doc.get("fx_rate") in (None, ""):
@@ -2827,13 +3188,31 @@ def norm_doc(doc: dict, book: Book, need_rate: bool = True) -> dict:
             raise LedgerError(f"{where}: fx_rate must be positive")
         else:
             out["fx_rate"] = rate
+    filled = {}
+
+    def fill_rc(t: dict, what: str) -> dict:
+        """Billpal keeps reverse charge at the 0 % the supplier charged, or with no rate. The buyer owes the
+        domestic rate: fill it in as derived and unconfirmed. A sale keeps 0; without a known rate the
+        treatment is dropped and the line needs one."""
+        if t.get("regime") not in SELF_ASSESSED or (t.get("rate") is not None and parse_rate(t["rate"], what) != 0):
+            return t
+        if doc["direction"] == "out":
+            return {**t, "rate": "0"}
+        rate = (country_rule(book, out["date"].year).get("vat_standard")
+                if book.profile.get("vat_status") in ("regular", "small_business") else None)
+        if not rate:
+            return {k: v for k, v in t.items() if k not in ("regime", "rate", "amount")}
+        filled.setdefault("tax", {"type": t.get("type") or "vat", "regime": t["regime"], "rate": rate,
+                                  "source": "derived", "confirmed": False})
+        return {**{k: v for k, v in t.items() if k != "amount"}, "rate": rate, "source": "derived", "confirmed": False}
+
     taxes = []
     for t in doc.get("taxes") or []:
         if not isinstance(t, dict):
             raise LedgerError(f"{where}: each tax line is an object")
-        t = {k: v for k, v in t.items() if v is not None}
+        t = fill_rc({k: v for k, v in t.items() if v is not None}, f"{where} tax rate")
         if t.get("regime"):
-            nt = normalize_tax({k: v for k, v in t.items() if k != "base"} | {"source": "document"}, book, where, prec)
+            nt = normalize_tax({"source": "document", **{k: v for k, v in t.items() if k != "base"}}, book, where, prec)
         else:
             nt = {"type": t.get("type") or "vat", "regime": None, "rate": parse_rate(t.get("rate", "0"), f"{where} tax rate"),
                   "amount": None if t.get("amount") is None else money(t["amount"], prec, f"{where} tax amount")}
@@ -2852,10 +3231,13 @@ def norm_doc(doc: dict, book: Book, need_rate: bool = True) -> dict:
         if tax is not None:
             if not isinstance(tax, dict):
                 raise LedgerError(f"{where} line {i}: tax must be an object")
-            tax = {k: v for k, v in tax.items() if v is not None}
+            tax = fill_rc({k: v for k, v in tax.items() if v is not None}, f"{where} line {i} tax rate")
             if not tax.get("regime") or not tax.get("type"):
                 # Billpal leaves line type and regime empty when the header tax line carries them.
                 rate = parse_rate(tax["rate"], f"{where} line {i} tax rate") if tax.get("rate") is not None else None
+                if filled and not tax.get("regime") and not rate:
+                    tax = {**tax, "rate": filled["tax"]["rate"], "source": "derived", "confirmed": False}
+                    rate = parse_rate(tax["rate"])
                 header = {(t["type"], t["regime"]) for t in taxes if t["regime"] and t["rate"] == rate
                           and t["type"] == tax.get("type", t["type"]) and t["regime"] == tax.get("regime", t["regime"])}
                 if rate is not None and len(header) == 1:
@@ -2870,7 +3252,9 @@ def norm_doc(doc: dict, book: Book, need_rate: bool = True) -> dict:
     if not lines:
         if taxes and all(t["base"] is not None for t in taxes):
             lines = [{"amount": format(t["base"], "f"), "amount_is": "net",
-                      **({"tax": {"type": t["type"], "regime": t["regime"], "rate": rate_str(t["rate"])}} if t["regime"] else {})}
+                      **({"tax": {"type": t["type"], "regime": t["regime"], "rate": rate_str(t["rate"]),
+                                  **({"source": "derived", "confirmed": False} if t.get("source") == "derived" else {})}}
+                         if t["regime"] else {})}
                      for t in taxes]
             out["lines_from"] = "taxes"
         elif out["total"] is not None:
@@ -2879,6 +3263,7 @@ def norm_doc(doc: dict, book: Book, need_rate: bool = True) -> dict:
         else:
             raise LedgerError(f"{where}: needs lines, tax lines with bases, or a total")
     out["lines"] = lines
+    out["rc_filled"] = filled.get("tax")
     return out
 
 
@@ -2888,6 +3273,8 @@ def derive_tax(doc: dict, book: Book) -> dict | None:
     status = book.profile.get("vat_status")
     if doc["direction"] != "in" or status not in ("regular", "small_business"):
         return None
+    if doc.get("rc_filled"):
+        return dict(doc["rc_filled"])
     party = doc.get("party") or {}
     iso = lambda v: (v or "").strip().upper() if re.fullmatch(r"[A-Za-z]{2}", (v or "").strip()) else None
     country, id_country = iso(party.get("country")), iso(party.get("tax_id_country"))
@@ -2906,7 +3293,7 @@ def derive_tax(doc: dict, book: Book) -> dict | None:
     rate = country_rule(book, doc["date"].year).get("vat_standard")
     if not rate:
         return None
-    return {"type": "vat", "regime": "reverse_charge", "rate": rate, "source": "derived", "confirmed": status == "regular"}
+    return {"type": "vat", "regime": "reverse_charge", "rate": rate, "source": "derived", "confirmed": False}
 
 
 def find_party_account(book: Book, doc: dict, taken: dict | None = None) -> tuple[str | None, dict | None, str]:
@@ -2955,13 +3342,31 @@ def stage_documents(book: Book, data: dict) -> dict:
     if not isinstance(data, dict) or data.get("schema") != "documents/1":
         raise LedgerError("documents file needs schema documents/1")
     originals = data.get("documents") or []
-    docs = [norm_doc(d, book) for d in originals]
+    docs, errors = [], []
+    for raw in originals:
+        try:
+            docs.append(norm_doc(raw, book))
+            errors.append(None)
+        except LedgerError as exc:
+            docs.append(None)
+            errors.append("; ".join(exc.messages))
+    ok_docs = [d for d in docs if d]
     booked = book.documents_in_ledger()
-    linked = {l for d in docs if d["kind"] in ("invoice", "credit_note") for l in (d.get("linked") or [])}
-    invoices = {d["id"] for d in docs if d["kind"] in ("invoice", "credit_note")}
-    linked |= {d["id"] for d in docs if d["kind"] == "receipt" and invoices & set(d.get("linked") or [])}
+    linked = {l for d in ok_docs if d["kind"] in ("invoice", "credit_note") for l in (d.get("linked") or [])}
+    invoices = {d["id"] for d in ok_docs if d["kind"] in ("invoice", "credit_note")}
+    linked |= {d["id"] for d in ok_docs if d["kind"] == "receipt" and invoices & set(d.get("linked") or [])}
     out, taken = [], {}
-    for d, original in zip(docs, originals):
+    for d, original, error in zip(docs, originals, errors):
+        if d is None:
+            raw = original if isinstance(original, dict) else {}
+            try:
+                held = bool(raw.get("review_open")) and bool(parse_date(raw.get("date"), "date"))
+            except LedgerError:
+                held = False
+            out.append({"ref": raw.get("id"), "status": "review_blocked" if held else "invalid",
+                        "note": f"could not be read: {error}" + (". Still in Billpal Review, recorded as held" if held else ""),
+                        "document": original, "suggested": {"lines": []}})
+            continue
         status, note = "new", ""
         booked_link = next((l for l in d.get("linked") or [] if l in booked), None)
         if d["kind"] == "reminder":
@@ -3102,6 +3507,7 @@ def doc_txn(book: Book, raw: dict, dd: dict, sug: dict) -> str:
     conv = (lambda x: q(x * rate, book.prec)) if d["currency"] != book.currency else (lambda x: x)
     posts = []
     point = d["tax_point"] or d["date"]
+    confirmed = dd.get("confirmed", "document" if not dd.get("lines") else "no")
     for w in work:
         line = {"account": w["account"], "amount_is": "net" if w["net"] else "gross",
                 **({"asset": w["asset"]} if w["asset"] else {})}
@@ -3109,6 +3515,8 @@ def doc_txn(book: Book, raw: dict, dd: dict, sug: dict) -> str:
             line["tax"] = {**{k: v for k, v in w["tax"].items() if k not in ("amount", "point", "direction")},
                            "amount": format(sign * conv(w["tax_amt"]), "f"), "point": point.isoformat(),
                            "direction": "purchase" if purchase else "sale"}
+            if confirmed == "user":
+                line["tax"] = confirm_tax(line["tax"])
         posts += expand_line(book, line, sign * conv(w["amount"]), d["date"], where, require_tax=True, default_point=point)
     total = sum((p.amount for p in posts), Decimal(0))
     if d["currency"] != book.currency and d["total"] is not None:
@@ -3127,7 +3535,6 @@ def doc_txn(book: Book, raw: dict, dd: dict, sug: dict) -> str:
         pmeta = {"document": d["id"], "document_number": d.get("number"), "due_date": d["due_date"],
                  "document_date": d["date"]}
     posts.append(Posting(party, -total, book.currency, pmeta))
-    confirmed = dd.get("confirmed", "document" if not dd.get("lines") else "no")
     meta = entry_meta({"confirmed": confirmed, "classified_by": dd.get("classified_by") or "document",
                        "document": d["id"]}, where)
     meta.update({"document_kind": d["kind"], "document_number": d.get("number"), "document_date": d["date"].isoformat(),
@@ -3138,6 +3545,10 @@ def doc_txn(book: Book, raw: dict, dd: dict, sug: dict) -> str:
         meta["discount"] = fmt(d["discount"], prec)
     if d.get("linked"):
         meta["linked_documents_json"] = d["linked"]
+    if d.get("url"):
+        meta["document_url"] = d["url"]
+    if d["party"].get("tax_id"):
+        meta["party_tax_id"] = clean_text(d["party"]["tax_id"])
     if d["currency"] != book.currency:
         meta["fx_json"] = {"amount": format(d["total"] or 0, "f"), "currency": d["currency"], "rate": format(rate, "f")}
     party_name = clean_text(d["party"].get("name")) or party.rsplit(":", 1)[-1]
@@ -3226,7 +3637,20 @@ def in_window(d: date, doc: dict) -> bool:
     return doc["date"] - timedelta(days=14) <= d <= latest + timedelta(days=42)
 
 
-def candidate_pool(book: Book, documents: dict | None) -> list[dict]:
+def parse_docs(book: Book, raws, need_rate: bool = False, skip_review: bool = False) -> tuple[list[dict], list[dict]]:
+    """Normalized documents and the ones that could not be read, so one bad document never stops a run."""
+    docs, skipped = [], []
+    for raw in raws or []:
+        if skip_review and isinstance(raw, dict) and raw.get("review_open"):
+            continue
+        try:
+            docs.append(norm_doc(raw, book, need_rate=need_rate))
+        except LedgerError as exc:
+            skipped.append({"document": raw.get("id") if isinstance(raw, dict) else None, "reason": "; ".join(exc.messages)})
+    return docs, skipped
+
+
+def candidate_pool(book: Book, documents: dict | None, skipped: list | None = None) -> list[dict]:
     pool = []
     if book.basis == "accrual":
         items, _, _ = compute_items(book)
@@ -3245,7 +3669,9 @@ def candidate_pool(book: Book, documents: dict | None) -> list[dict]:
             })
         return pool
     booked = book.documents_in_ledger()
-    docs = [norm_doc(raw, book, need_rate=False) for raw in (documents or {}).get("documents") or []]
+    docs, bad = parse_docs(book, (documents or {}).get("documents"), skip_review=True)
+    if skipped is not None:
+        skipped += bad
     kinds = {d["id"]: d["kind"] for d in docs}
     for d in docs:
         linked = set(d.get("linked") or [])
@@ -3333,13 +3759,15 @@ def pair_exact(rows: list[dict], dates: dict) -> None:
 def candidates(book: Book, pending: dict, documents: dict | None) -> dict:
     if pending.get("kind") != "statement":
         raise LedgerError("candidates works on a staged statement")
-    pool = candidate_pool(book, documents)
-    out = []
+    skipped = []
+    pool = candidate_pool(book, documents, skipped)
+    out, seen = [], set()
     for st in pending["statements"]:
         for r in st["rows"]:
             if r["status"] not in ("new", "ambiguous"):
                 continue
             amt, d, fee = dec(r["amount"]), parse_date(r["booking_date"]), is_fee_row(r)
+            card = is_card_row(st, r)
             # Paid amounts by currency: the ledger amount, plus the original one on a foreign card payment.
             got_by = {book.currency: abs(amt)}
             fx = r.get("fx") or {}
@@ -3389,7 +3817,8 @@ def candidates(book: Book, pending: dict, documents: dict | None) -> dict:
                     if pct is not None and pct <= 3 and abs(q(want * (1 - pct / 100), prec) - got) <= unit and in_time:
                         kind, needs_user = "skonto", False
                     elif (want - got) / want <= Decimal("0.03"):
-                        kind = "fx_difference" if fx_gap else "skonto_unconfirmed"
+                        # A card payment is never paid with a cash discount: a small gap is a partial or a rounding.
+                        kind = "fx_difference" if fx_gap else "partial" if card else "skonto_unconfirmed"
                     else:
                         kind = "partial"
                 elif fx_gap and (got - want) / want <= Decimal("0.03"):
@@ -3399,6 +3828,7 @@ def candidates(book: Book, pending: dict, documents: dict | None) -> dict:
             # A receipt counts as its invoice where the invoice is offered too; elsewhere (outside the
             # invoice's window, or the invoice in review) the receipt is offered on its own.
             offered = {x[0]["document"] for x in linked}
+            seen |= offered
             drop = {x[0]["document"] for x in linked if set(x[0].get("invoices") or []) & offered}
             linked = [x for x in linked if x[0]["document"] not in drop]
             found = [f for f in found if f["documents"][0] not in drop]
@@ -3429,23 +3859,42 @@ def candidates(book: Book, pending: dict, documents: dict | None) -> dict:
     held = [] if book.basis == "accrual" else [
         {"document": d.get("id"), "date": d.get("date"), "total": d.get("total"), "party": (d.get("party") or {}).get("name")}
         for d in (documents or {}).get("documents") or [] if d.get("review_open") and d.get("id") not in book.documents_in_ledger()]
-    return {"rows": out, "pool_size": len(pool), "held_in_review": held}
+    # Cash basis: a cost document in the statements' span that no row pays was likely paid privately or
+    # from another account. The skill asks; it never books these on its own.
+    spans = [(parse_date(st["from"]), parse_date(st["to"])) for st in pending["statements"] if st.get("from") and st.get("to")]
+    unpaid = [] if book.basis == "accrual" or not spans else [
+        {"document": doc["document"], "date": doc["date"].isoformat(), "party_name": doc["party_name"],
+         "number": doc["number"], "total": fmt(abs(doc["original_total"]), precision_for(doc["currency"])),
+         "currency": doc["currency"]}
+        for doc in pool if doc["sign"] < 0 and doc["document"] not in seen
+        and min(a for a, _ in spans) <= doc["date"] <= max(b for _, b in spans)]
+    return {"rows": out, "pool_size": len(pool), "held_in_review": held, "skipped_documents": skipped,
+            "documents_without_payment": unpaid}
 
 
 # ── Billpal write-back ───────────────────────────────────────────────────────
 
 def writeback(book: Book, documents: dict | None) -> dict:
     """Payment updates for Billpal documents that the ledger proves: the cumulative amount paid, the
-    date of the last payment, and the method only when the bank statement shows it."""
+    date of the last payment, and the method only when the bank statement shows it. A foreign-currency
+    document is compared and reported in its own currency, from the original amount on the bank row."""
     money_of = lambda t: sum((p.amount for p in t.postings if book.role_of(p.account) in MONEY_ROLES), Decimal(0))
     live = {t.meta.get("txn_id") for t in book.live_txns()}
-    unit = Decimal(1).scaleb(-book.prec)
-    given = {}
-    for raw in (documents or {}).get("documents") or []:
-        d = norm_doc(raw, book)
-        if d["total"] is not None and d["currency"] == book.currency:
-            given[d["id"]] = d
-    # pays[doc]: (date, money paid, discount taken, method); prior[doc]: paid before this ledger, None if unknown
+    parsed, skipped = parse_docs(book, (documents or {}).get("documents"))
+    given = {d["id"]: d for d in parsed if d["total"] is not None}
+    cur_of = lambda doc: given[doc]["currency"] if doc in given else book.currency
+    prec_of = lambda doc: book.prec if cur_of(doc) == book.currency else precision_for(cur_of(doc))
+
+    def original(t, doc):
+        if cur_of(doc) == book.currency:
+            return None
+        fx = json.loads(t.meta["fx_json"], parse_float=Decimal) if t.meta.get("fx_json") else {}
+        if str(fx.get("currency") or "").upper() != cur_of(doc) or fx.get("amount") in (None, ""):
+            return None
+        return abs(dec(fx["amount"]))
+
+    # pays[doc]: (date, money paid, discount taken, method, paid in the document's currency when foreign);
+    # prior[doc]: paid before this ledger, None if unknown
     pays, settled, unsplit, prior = defaultdict(list), {}, set(), {}
     if book.basis == "accrual":
         items, _, _ = compute_items(book)
@@ -3458,17 +3907,22 @@ def writeback(book: Book, documents: dict | None) -> dict:
         for doc, it in items.items():
             origin = book.txn_by_id.get(it["txn_id"])
             carried = bool(origin and origin.meta.get("opening"))
-            total = given[doc]["total"] if doc in given else (None if carried else abs(it["amount"]))
-            prior[doc] = None if total is None else total - abs(it["amount"])
+            if cur_of(doc) != book.currency:
+                total, prior[doc] = given[doc]["total"], None if carried else Decimal(0)
+            else:
+                total = given[doc]["total"] if doc in given else (None if carried else abs(it["amount"]))
+                prior[doc] = None if total is None else total - abs(it["amount"])
             settled[doc] = (total, it["remaining"] == 0)
             for a in it["allocs"]:
                 t = book.txn_by_id.get(a["txn_id"])
                 if t is None or a["txn_id"] not in live or t.meta.get("document_kind"):
                     continue
                 cash, alloc = abs(money_of(t)), abs(a["amount"])
-                if not cash or len(docs_in[a["txn_id"]]) > 1:
+                alone = len(docs_in[a["txn_id"]]) <= 1
+                if not cash or not alone:
                     cash = alloc
-                pays[doc].append((t.date, min(cash, alloc), max(alloc - cash, Decimal(0)), t.meta.get("payment_method")))
+                pays[doc].append((t.date, min(cash, alloc), max(alloc - cash, Decimal(0)), t.meta.get("payment_method"),
+                                  original(t, doc) if alone else None))
     else:
         settles = set()
         for t in book.live_txns():
@@ -3479,28 +3933,35 @@ def writeback(book: Book, documents: dict | None) -> dict:
             if len(docs) > 1:
                 unsplit.update(docs)
                 continue
-            pays[docs[0]].append((t.date, cash, Decimal(0), t.meta.get("payment_method")))
+            pays[docs[0]].append((t.date, cash, Decimal(0), t.meta.get("payment_method"), original(t, docs[0])))
             if t.meta.get("settles") == "yes":
                 settles.add(docs[0])
         for doc, rows in pays.items():
-            d = given.get(doc)
-            total, cash = (d["total"] if d else None), sum((r[1] for r in rows), Decimal(0))
+            d, foreign = given.get(doc), cur_of(doc) != book.currency
+            total = d["total"] if d else None
             # Cash books keep no open items: payments from an earlier year are only known for this year's documents.
             prior[doc] = Decimal(0) if d and d["date"] >= book.fy_from else None
+            if foreign and any(r[4] is None for r in rows):
+                settled[doc] = (total, False)
+                continue
+            cash = sum((r[4] if foreign else r[1] for r in rows), Decimal(0))
+            unit = Decimal(1).scaleb(-prec_of(doc))
             terms = (d or {}).get("terms") or {}
             last = max(r[0] for r in rows)
             skonto = (total is not None and terms.get("skonto_percent") is not None and terms.get("skonto_days") is not None
                       and dec(terms["skonto_percent"]) <= 3 and last <= d["date"] + timedelta(days=int(terms["skonto_days"]))
-                      and abs(q(total * (1 - dec(terms["skonto_percent"]) / 100), book.prec) - cash) <= unit)
+                      and abs(q(total * (1 - dec(terms["skonto_percent"]) / 100), prec_of(doc)) - cash) <= unit)
             full = total is not None and (cash >= total or skonto or doc in settles)
             settled[doc] = (total, full)
             if full and cash < total:
-                pays[doc].append((last, Decimal(0), total - cash, None))
+                pays[doc].append((last, Decimal(0), total - cash, None, Decimal(0)))
     out = []
     for doc in sorted(set(pays) | unsplit):
         if not doc.startswith("billpal:"):
             continue
         uid, rows = doc.split(":", 1)[1], pays.get(doc, [])
+        cur, prec = cur_of(doc), prec_of(doc)
+        foreign = cur != book.currency
         paid = sum((r[1] for r in rows), Decimal(0))
         entry = {"document": doc, "paid": fmt(paid, book.prec), "calls": []}
         if doc in unsplit:
@@ -3509,32 +3970,41 @@ def writeback(book: Book, documents: dict | None) -> dict:
             continue
         if not paid:
             continue
+        if foreign and any(r[1] and r[4] is None for r in rows):
+            entry["note"] = (f"paid {fmt(paid, book.prec)} {book.currency}, but the bank row has no original {cur} "
+                             f"amount. Compare with amount_paid in get_document before writing")
+            out.append(entry)
+            continue
+        if foreign:
+            paid = sum((r[4] or Decimal(0) for r in rows if r[1]), Decimal(0))
+            entry.update({"paid": fmt(paid, prec), "currency": cur})
         total, full = settled.get(doc, (None, False))
         last = max(r[0] for r in rows).isoformat()
         methods = {r[3] for r in rows if r[1]}
         method = next(iter(methods)) if len(methods) == 1 and None not in methods else None
         pay = {"document_ids": [uid], "payment_date": last, **({"payment_method": method} if method else {})}
         discount = sum((r[2] for r in rows), Decimal(0))
+        disc_cur, disc_prec = (cur, prec) if book.basis == "cash" else (book.currency, book.prec)
         if total is None and book.basis == "cash":
             entry["note"] = "needs the document total (--documents) to say paid or partially paid"
         elif full:
             entry["calls"].append({"tool": "set_payment", "arguments": {**pay, "payment_status": "paid"}})
             if discount:
                 entry["calls"].append({"tool": "add_document_note", "arguments": {
-                    "document_ids": [uid], "body": f"Skonto {fmt(discount, book.prec)} {book.currency} taken, "
-                                                   f"paid {fmt(paid, book.prec)} on {last}"}})
+                    "document_ids": [uid], "body": f"Skonto {fmt(discount, disc_prec)} {disc_cur} taken, "
+                                                   f"paid {fmt(paid, prec)} {cur} on {last}"}})
         elif prior.get(doc) is None:
             entry["note"] = ("partly paid, but what was paid before this ledger is unknown. Give --documents with the "
                              "total, or compare with amount_paid in get_document before writing")
         else:
             cumulative = prior[doc] + paid
-            entry["paid"] = fmt(cumulative, book.prec)
+            entry["paid"] = fmt(cumulative, prec)
             entry["calls"].append({"tool": "set_amount_paid", "arguments": {"document_id": uid, "amount_paid": float(cumulative)},
                                    "needs": "expected_updated_at from get_document"})
             entry["calls"].append({"tool": "set_payment", "arguments": {**pay, "payment_status": "partially_paid"}})
-        entry["total"] = None if total is None else fmt(total, book.prec)
+        entry["total"] = None if total is None else fmt(total, prec)
         out.append(entry)
-    return {"documents": out}
+    return {"documents": out, "skipped_documents": skipped}
 
 
 # ── Assets and depreciation ──────────────────────────────────────────────────
@@ -3613,25 +4083,59 @@ def own_balance(book: Book, account: str) -> Decimal:
     return cum[-1] if cum else Decimal(0)
 
 
+def result_split(book: Book) -> tuple[dict, dict]:
+    """Where the year's result and the owners' draws go: one retained_earnings account, or in a partnership
+    one capital account per partner (`partner`, `share`) that also takes that partner's draws."""
+    caps = book.accounts_with_role("retained_earnings")
+    partners = {a: book.accounts[a]["meta"] for a in caps if book.accounts[a]["meta"].get("partner")}
+    if not partners:
+        if len(caps) != 1:
+            raise LedgerError("Need exactly one retained_earnings account for the rollover, or one per partner with partner and share")
+        return {caps[0]: Decimal(1)}, {}
+    if len(partners) != len(caps):
+        raise LedgerError("In a partnership every retained_earnings account needs partner and share")
+    shares = {a: dec(m.get("share") or "0") for a, m in partners.items()}
+    if sum(shares.values()) != 1:
+        raise LedgerError(f"Partner shares add up to {sum(shares.values())}, not 1")
+    capital = {m["partner"]: a for a, m in partners.items()}
+    draws = {}
+    for a in book.accounts:
+        if book.role_of(a) == "private":
+            who = book.accounts[a]["meta"].get("partner")
+            if who not in capital:
+                raise LedgerError(f"{a}: name the partner (partner) so the draws close into their capital account")
+            draws[a] = capital[who]
+    return shares, draws
+
+
 def build_rollover(book: Book, to: date | None, label: str | None, write: bool) -> dict:
     rep = readiness(book, None, year_end=True)
     new_from = book.fy_to + timedelta(days=1)
     new_to = to or (add_months(new_from, 12) - timedelta(days=1))
-    re_acct = book.one_role("retained_earnings")
+    shares, draws = result_split(book)
+    re_acct = next(iter(shares))
     items, _, _ = compute_items(book)
-    result = Decimal(0)
+    result = profit = Decimal(0)
     lines = {}
     for acct in sorted(book.accounts):
         bal = own_balance(book, acct)
         root, role = acct.split(":")[0], book.role_of(acct)
+        if acct in draws:
+            lines[draws[acct]] = lines.get(draws[acct], Decimal(0)) + bal
+            continue
         if root in ("Income", "Expenses") or role == "private":
             result += bal
+            profit += bal if root in ("Income", "Expenses") else 0
             continue
         if role in PARTY_ROLES and book.basis == "accrual":
             continue
         if bal:
             lines[acct] = lines.get(acct, Decimal(0)) + bal
-    lines[re_acct] = lines.get(re_acct, Decimal(0)) + result
+    left = result
+    for i, (acct, share) in enumerate(sorted(shares.items())):
+        part = left if i == len(shares) - 1 else q(result * share, book.prec)
+        left -= part
+        lines[acct] = lines.get(acct, Decimal(0)) + part
     opening = [{"account": a, "amount": fmt(v, book.prec)} for a, v in lines.items() if v]
     for it in sorted(items.values(), key=lambda i: (i["account"], i["date"], i["document"])):
         if it["remaining"]:
@@ -3649,7 +4153,7 @@ def build_rollover(book: Book, to: date | None, label: str | None, write: bool) 
             assets.append(raw)
     preview = {
         "ready": rep["ready"], "fails": rep["fails"], "new_fiscal_year": [new_from.isoformat(), new_to.isoformat()],
-        "result_to": re_acct, "result": fmt(-result, book.prec), "opening_lines": opening,
+        "result_to": re_acct if len(shares) == 1 else sorted(shares), "result": fmt(-profit, book.prec), "draws": fmt(result - profit, book.prec), "opening_lines": opening,
         "open_items": sum(1 for i in items.values() if i["remaining"]), "assets_carried": len(assets),
     }
     if not write:
@@ -3748,7 +4252,7 @@ def vat_schedule(book: Book, start: date, end: date) -> dict:
                 if not start <= d <= end:
                     continue
                 key = (period_key(d, by), p.meta.get("tax_type", "vat"), direction, p.meta["tax_regime"],
-                       p.meta.get("tax_rate", "0"))
+                       p.meta.get("tax_rate", "0"), p.meta.get("tax_jurisdiction") or "")
                 if part == "base":
                     rows[key]["base"] += sign * value * frac
                 elif part == "tax":
@@ -3762,18 +4266,19 @@ def vat_schedule(book: Book, start: date, end: date) -> dict:
                         v = {"base": value, "tax": tax_amt, "input_tax": tax_amt * rec}[c["part"]]
                         codes[(period_key(d, by), c["code"])] += sign * v * frac
     prec = book.prec
-    lines = [{"period": k[0], "type": k[1], "direction": k[2], "regime": k[3], "rate": k[4],
+    lines = [{"period": k[0], "type": k[1], "direction": k[2], "regime": k[3], "rate": k[4], "jurisdiction": k[5] or None,
               "base": q(v["base"], prec), "tax": q(v["tax"], prec), "input_tax": q(v["input_tax"], prec)}
              for k, v in sorted(rows.items())]
     periods = defaultdict(lambda: {"tax": Decimal(0), "input_tax": Decimal(0)})
     for ln in lines:
-        periods[(ln["period"], ln["type"])]["tax"] += ln["tax"]
-        periods[(ln["period"], ln["type"])]["input_tax"] += ln["input_tax"]
+        periods[(ln["period"], ln["type"], ln["jurisdiction"] or "")]["tax"] += ln["tax"]
+        periods[(ln["period"], ln["type"], ln["jurisdiction"] or "")]["input_tax"] += ln["input_tax"]
     return {
         "period": by, "lines": lines, "types": sorted({ln["type"] for ln in lines}),
         "codes": [{"period": k[0], "code": k[1], "amount": q(v, prec)} for k, v in sorted(codes.items())],
-        "totals": [{"period": p, "type": ty, "tax": v["tax"], "input_tax": v["input_tax"], "payable": v["tax"] - v["input_tax"]}
-                   for (p, ty), v in sorted(periods.items())],
+        "totals": [{"period": p, "type": ty, "jurisdiction": j or None, "tax": v["tax"], "input_tax": v["input_tax"],
+                    "payable": v["tax"] - v["input_tax"], "due": period_due(book, p, by) if ty in VAT_LIKE else None}
+                   for (p, ty, j), v in sorted(periods.items())],
     }
 
 
@@ -3835,7 +4340,11 @@ def build_report(book: Book, start: date, end: date, by: str, lang: str) -> dict
     for a in assets:
         a["to_book"] = fmt(a["to_book"], prec)
     rep = readiness(book, min(end, book.fy_to), year_end=end >= book.fy_to)
-    missing = next((w["items"] for w in rep["warnings"] if w["code"] == "missing_receipts"), [])
+    missing = [{"date": t.date.isoformat(), "payee": t.payee, "amount": money_amount(book, t),
+                "account": ", ".join(dict.fromkeys(p.account for p in t.postings if book.role_of(p.account)
+                                                   not in MONEY_ROLES | {"vat_in", "vat_out"})),
+                "narration": t.narration, "txn_id": t.meta.get("txn_id", "")}
+               for t in missing_receipt_txns(book, [t for t in book.live_txns() if t.date <= min(end, book.fy_to)])]
     journal = []
     for t in sorted(book.txns, key=lambda t: (t.date, t.line)):
         if not start <= t.date <= end:
@@ -3845,10 +4354,11 @@ def build_report(book: Book, start: date, end: date, by: str, lang: str) -> dict
             journal.append({"date": t.date.isoformat(), "txn_id": t.meta.get("txn_id", ""), "payee": t.payee,
                             "narration": t.narration, "account": p.account, "code": code, "amount": p.amount,
                             "tax_type": p.meta.get("tax_type", ""), "tax_regime": p.meta.get("tax_regime", ""),
-                            "tax_rate": p.meta.get("tax_rate", ""),
+                            "tax_rate": p.meta.get("tax_rate", ""), "tax_part": p.meta.get("tax_part", ""),
                             "tax_point": p.meta.get("tax_point", ""),
                             "document": p.meta.get("document") or t.meta.get("document")
                             or ", ".join(json.loads(t.meta.get("documents_json") or "[]")),
+                            "document_url": t.meta.get("document_url", ""),
                             "confirmed": t.meta.get("confirmed", "")})
     return {
         "meta": {"title": book.options.get("title", ""), "currency": book.currency, "from": start.isoformat(),
@@ -3857,7 +4367,8 @@ def build_report(book: Book, start: date, end: date, by: str, lang: str) -> dict
                  "file": book.path.name, "version": book.version, "sha256": book.sha,
                  "ready": rep["ready"], "year_end": rep["year_end"], "precision": prec,
                  "fails": [f"{f['code']}: {f['message']}" + (f" ({f['count']})" if f["count"] else "") for f in rep["fails"]],
-                 "warnings": [f"{w['code']}: {w['message']}" + (f" ({w['count']})" if w["count"] else "")
+                 "warnings": [f"{w['code']}: {w['message']}" + (f" ({'; '.join(w['items'][:5])})" if w["code"] in REVIEW_CODES
+                                                                 else f" ({w['count']})" if w["count"] else "")
                               for w in rep["warnings"] if w["code"] != "missing_receipts"],
                  "reconciled": reconciled, "result": result, "fiscal_year_result": fy_result,
                  "missing_receipts_count": rep["missing_receipts_count"]},
@@ -3865,10 +4376,45 @@ def build_report(book: Book, start: date, end: date, by: str, lang: str) -> dict
         "trial_balance": tb, "trial_totals": sums, "pnl": pnl,
         "balance_sheet": {**{k.lower(): v for k, v in bs.items()}, "assets_total": assets_total,
                           "liabilities_total": liab_total, "equity_total": eq_total, "result": fy_result},
-        "vat": vat_schedule(book, start, end), "open_items": open_items,
+        "vat": vat_schedule(book, start, end), "tax_form": tax_form(book, pnl), "open_items": open_items,
         "unallocated": [{"account": a, "amount": v} for a, v in unalloc.items()],
         "assets": assets, "missing_receipts": missing, "journal": journal,
     }
+
+
+TAX_FORMS = {"US": "Schedule C", "DE": "Anlage EÜR", "AT": "E1a"}
+TAX_LINE_NAMES = {"Schedule C": {
+    "1": "Gross receipts or sales", "2": "Returns and allowances", "4": "Cost of goods sold", "6": "Other income",
+    "8": "Advertising", "9": "Car and truck expenses", "10": "Commissions and fees", "11": "Contract labor",
+    "13": "Depreciation and section 179", "15": "Insurance (other than health)", "16b": "Interest (other)",
+    "17": "Legal and professional services", "18": "Office expense", "20b": "Rent (other business property)",
+    "21": "Repairs and maintenance", "22": "Supplies", "23": "Taxes and licenses", "24a": "Travel",
+    "24b": "Deductible meals", "25": "Utilities", "26": "Wages", "27b": "Other expenses"}}
+
+
+def tax_form(book: Book, pnl: list) -> dict | None:
+    """A draft of the owner's business tax form from each account's tax_line. Only a business taxed
+    as its single owner; lines are positive amounts as the form shows them."""
+    form = TAX_FORMS.get(book.profile.get("country") or "")
+    if not form or book.profile.get("company") or any(i["meta"].get("partner") for i in book.accounts.values()):
+        return None
+    lines, unmapped, nondeductible = defaultdict(Decimal), [], []
+    for r in pnl:
+        line = account_attr(book, r["account"], "tax_line")
+        amount = r["total"] if r["group"] == "Income" and line != "2" else -r["total"]
+        item = {"account": r["account"], "name": r["name"], "amount": amount}
+        if line == "none":
+            nondeductible.append(item)
+        elif line:
+            lines[line] += amount
+        else:
+            unmapped.append(item)
+    if not lines:
+        return None
+    order = lambda k: (int(re.match(r"\d*", k).group() or 0), k)
+    names = TAX_LINE_NAMES.get(form, {})
+    return {"form": form, "lines": [{"line": k, "name": names.get(k, ""), "amount": lines[k]} for k in sorted(lines, key=order)],
+            "unmapped": unmapped, "not_deductible": nondeductible}
 
 
 def own_before(book: Book, account: str, before: date) -> Decimal:
@@ -3905,6 +4451,12 @@ def write_csv(path: Path, header: list, rows: list, delimiter: str, decimal: str
     path.write_text(("\ufeff" if bom else "") + buf.getvalue(), encoding="utf-8", newline="")
 
 
+MISSING_COLS = ["date", "payee", "amount", "account", "narration", "txn_id"]
+VAT_COLS = ["period", "type", "jurisdiction", "direction", "regime", "rate", "base", "tax", "input_tax"]
+JOURNAL_COLS = ["date", "txn_id", "payee", "narration", "account", "code", "amount", "tax_type", "tax_regime", "tax_rate",
+                "tax_point", "document", "document_url", "confirmed"]
+
+
 def write_report(data: dict, out_dir: Path, formats: set, delimiter: str, decimal: str, bom: bool) -> list[str]:
     out_dir.mkdir(parents=True, exist_ok=True)
     written = []
@@ -3932,9 +4484,7 @@ def write_report(data: dict, out_dir: Path, formats: set, delimiter: str, decima
                                   [[side, r["account"], r["code"], r["name"], r["amount"]]
                                    for side in ("assets", "liabilities", "equity") for r in data["balance_sheet"][side]]
                                   + [["result", "", "", "", data["balance_sheet"]["result"]]]),
-            "vat.csv": (["period", "type", "direction", "regime", "rate", "base", "tax", "input_tax"],
-                        [[r[k] for k in ("period", "type", "direction", "regime", "rate", "base", "tax", "input_tax")]
-                         for r in data["vat"]["lines"]]),
+            "vat.csv": (VAT_COLS, [[r[k] for k in VAT_COLS] for r in data["vat"]["lines"]]),
             "vat-codes.csv": (["period", "code", "amount"], [[r["period"], r["code"], r["amount"]] for r in data["vat"]["codes"]]),
             "open-items.csv": (["side", "document", "number", "party", "account", "date", "due", "amount", "open",
                                 "days_overdue", "bucket"],
@@ -3943,17 +4493,274 @@ def write_report(data: dict, out_dir: Path, formats: set, delimiter: str, decima
             "assets.csv": (["asset", "description", "cost", "prior", "due", "booked", "book_value_end"],
                            [[r[k] for k in ("asset", "description", "cost", "prior", "due", "booked", "book_value_end")]
                             for r in data["assets"]]),
-            "missing-receipts.csv": (["booking"], [[m] for m in data["missing_receipts"]]),
-            "journal.csv": (["date", "txn_id", "payee", "narration", "account", "code", "amount", "tax_type", "tax_regime",
-                             "tax_rate", "tax_point", "document", "confirmed"],
-                            [[r[k] for k in ("date", "txn_id", "payee", "narration", "account", "code", "amount",
-                                             "tax_type", "tax_regime", "tax_rate", "tax_point", "document", "confirmed")]
-                             for r in data["journal"]]),
+            "missing-receipts.csv": (MISSING_COLS, [[m[k] for k in MISSING_COLS] for m in data["missing_receipts"]]),
+            "journal.csv": (JOURNAL_COLS, [[r[k] for k in JOURNAL_COLS] for r in data["journal"]]),
         }
         for name, (header, rows) in tables.items():
             write_csv(out_dir / name, header, rows, *args)
             written.append(name)
     return written
+
+
+# ── Exports for the accountant's software ────────────────────────────────────
+
+# Buchungsstapel format 13, the same column line as Billpal's own DATEV export.
+DATEV_COLUMNS = (
+    "Umsatz (ohne Soll/Haben-Kz);Soll/Haben-Kennzeichen;WKZ Umsatz;Kurs;Basis-Umsatz;WKZ Basis-Umsatz;"
+    "Konto;Gegenkonto (ohne BU-Schlüssel);BU-Schlüssel;Belegdatum;Belegfeld 1;Belegfeld 2;Skonto;"
+    "Buchungstext;Postensperre;Diverse Adressnummer;Geschäftspartnerbank;Sachverhalt;Zinssperre;"
+    "Beleglink;Beleginfo - Art 1;Beleginfo - Inhalt 1;Beleginfo - Art 2;Beleginfo - Inhalt 2;"
+    "Beleginfo - Art 3;Beleginfo - Inhalt 3;Beleginfo - Art 4;Beleginfo - Inhalt 4;Beleginfo - Art 5;"
+    "Beleginfo - Inhalt 5;Beleginfo - Art 6;Beleginfo - Inhalt 6;Beleginfo - Art 7;Beleginfo - Inhalt 7;"
+    "Beleginfo - Art 8;Beleginfo - Inhalt 8;KOST1 - Kostenstelle;KOST2 - Kostenstelle;Kost-Menge;"
+    "EU-Land u. UStID (Bestimmung);EU-Steuersatz (Bestimmung);Abw. Versteuerungsart;Sachverhalt L+L;"
+    "Funktionsergänzung L+L;BU 49 Hauptfunktionstyp;BU 49 Hauptfunktionsnummer;BU 49 Funktionsergänzung;"
+    "Zusatzinformation - Art 1;Zusatzinformation- Inhalt 1;Zusatzinformation - Art 2;"
+    "Zusatzinformation- Inhalt 2;Zusatzinformation - Art 3;Zusatzinformation- Inhalt 3;"
+    "Zusatzinformation - Art 4;Zusatzinformation- Inhalt 4;Zusatzinformation - Art 5;"
+    "Zusatzinformation- Inhalt 5;Zusatzinformation - Art 6;Zusatzinformation- Inhalt 6;"
+    "Zusatzinformation - Art 7;Zusatzinformation- Inhalt 7;Zusatzinformation - Art 8;"
+    "Zusatzinformation- Inhalt 8;Zusatzinformation - Art 9;Zusatzinformation- Inhalt 9;"
+    "Zusatzinformation - Art 10;Zusatzinformation- Inhalt 10;Zusatzinformation - Art 11;"
+    "Zusatzinformation- Inhalt 11;Zusatzinformation - Art 12;Zusatzinformation- Inhalt 12;"
+    "Zusatzinformation - Art 13;Zusatzinformation- Inhalt 13;Zusatzinformation - Art 14;"
+    "Zusatzinformation- Inhalt 14;Zusatzinformation - Art 15;Zusatzinformation- Inhalt 15;"
+    "Zusatzinformation - Art 16;Zusatzinformation- Inhalt 16;Zusatzinformation - Art 17;"
+    "Zusatzinformation- Inhalt 17;Zusatzinformation - Art 18;Zusatzinformation- Inhalt 18;"
+    "Zusatzinformation - Art 19;Zusatzinformation- Inhalt 19;Zusatzinformation - Art 20;"
+    "Zusatzinformation- Inhalt 20;Stück;Gewicht;Zahlweise;Forderungsart;Veranlagungsjahr;"
+    "Zugeordnete Fälligkeit;Skontotyp;Auftragsnummer;Buchungstyp;USt-Schlüssel (Anzahlungen);"
+    "EU-Land (Anzahlungen);Sachverhalt L+L (Anzahlungen);EU-Steuersatz (Anzahlungen);"
+    "Erlöskonto (Anzahlungen);Herkunft-Kz;Buchungs GUID;KOST-Datum;SEPA-Mandatsreferenz;Skontosperre;"
+    "Gesellschaftername;Beteiligtennummer;Identifikationsnummer;Zeichnernummer;Postensperre bis;"
+    "Bezeichnung SoBil-Sachverhalt;Kennzeichen SoBil-Buchung;Festschreibung;Leistungsdatum;"
+    "Datum Zuord. Steuerperiode;Fälligkeit;Generalumkehr (GU);Steuersatz;Land;Abrechnungsreferenz;"
+    "BVV-Position;EU-Land u. UStID (Ursprung);EU-Steuersatz (Ursprung);Abw. Skontokonto"
+).split(";")
+DATEV_NUMBER_COLS = {0, 3, 4, 6, 7, 9, 12, DATEV_COLUMNS.index("EU-Steuersatz (Bestimmung)")}
+DATEV_HEADER_QUOTED = {0, 3, 7, 8, 9, 16, 17, 21, 23, 26, 29, 30}
+DATEV_EU_VAT, DATEV_EU_RATE = DATEV_COLUMNS.index("EU-Land u. UStID (Bestimmung)"), DATEV_COLUMNS.index("EU-Steuersatz (Bestimmung)")
+EU_VAT_PREFIXES = {"AT", "BE", "BG", "CY", "CZ", "DE", "DK", "EE", "EL", "ES", "FI", "FR", "HR", "HU", "IE", "IT", "LT",
+                   "LU", "LV", "MT", "NL", "PL", "PT", "RO", "SE", "SI", "SK", "XI"}
+
+
+def eu_vat_id(raw: str) -> str:
+    """An EU VAT ID with its country prefix, or "" (a US EIN or a bare number is not one)."""
+    s = re.sub(r"[\s.\-]", "", raw or "").upper()
+    return s if re.fullmatch(r"[A-Z]{2}[0-9A-Z+*]{2,12}", s) and s[:2] in EU_VAT_PREFIXES else ""
+# ponytail: 94/95 are the § 13b keys for services from EU suppliers; domestic § 13b (construction, scrap)
+# needs another key, which the accountant sets in DATEV.
+DATEV_KEYS = {("purchase", "standard", "19"): "9", ("purchase", "standard", "7"): "8",
+              ("sale", "standard", "19"): "3", ("sale", "standard", "7"): "2",
+              ("purchase", "reverse_charge", "19"): "94", ("purchase", "reverse_charge", "7"): "95",
+              ("purchase", "intra_community", "19"): "42", ("purchase", "intra_community", "7"): "43"}
+BMD_HEADER = ["Satzart", "Konto", "Gkonto", "Buchsymbol", "Belegnr", "Extbelegnr", "Buchdatum", "Belegdatum", "Buchcode",
+              "Steuercode", "Betrag", "Prozent", "Steuer", "Text", "Zziel", "Waehrung", "FWBetrag", "FWSteuer", "FWKurs",
+              "Dokument"]
+BMD_CODES = {("purchase", "standard"): "2", ("sale", "standard"): "1", ("purchase", "reverse_charge"): "79",
+             ("sale", "reverse_charge"): "77", ("purchase", "intra_community"): "9", ("sale", "intra_community"): "7",
+             ("sale", "export"): "5", ("purchase", "export"): "80"}
+# ponytail: BMD's common default symbols; the accountant maps others on import.
+BMD_SYMBOLS = {"bank": "BK", "card": "BK", "processor": "BK", "clearing": "BK", "cash": "KA", "ap": "ER", "ar": "AR"}
+XERO_NO_TAX = {"US": "Tax Exempt", "GB": "No VAT", "AU": "BAS Excluded", "NZ": "No GST"}
+XERO_SYSTEM_ROLES = MONEY_ROLES | PARTY_ROLES | {"retained_earnings"}
+# DVO imports the same BuErf file as BMD.
+EXPORT_FORMATS = ("datev", "bmd", "dvo", "qbo-journal", "xero-journal")
+
+
+def export_clean(value, limit: int) -> str:
+    return re.sub(r"\s+", " ", re.sub(r"[;\r\n]+", " ", str(value or ""))).strip()[:limit]
+
+
+def export_txns(book: Book, start: date, end: date) -> list[Entry]:
+    """Live bookings in the range. The opening balances stay out: the accountant carries them forward."""
+    return [t for t in sorted(book.live_txns(), key=lambda t: (t.date, t.line))
+            if start <= t.date <= end and not t.meta.get("opening")]
+
+
+def export_rows(book: Book, txns: list[Entry]) -> tuple[list[dict], list[str]]:
+    """One row per posting against the booking's money or party posting, gross with its VAT, the way
+    DATEV and BMD book. The VAT postings fold into their base posting."""
+    rows, warnings = [], []
+    for t in txns:
+        posts = [p for p in t.postings if not (p.meta.get("tax_part") in ("tax", "input_tax") and "tax_base" not in p.meta)]
+        anchor = (next((p for p in posts if book.role_of(p.account) in MONEY_ROLES | PARTY_ROLES), None)
+                  or next((p for p in posts if "tax_regime" not in p.meta), posts[0]))
+        total = Decimal(0)
+        for p in posts:
+            if p is anchor:
+                continue
+            m = p.meta
+            regime, direction = m.get("tax_regime", ""), m.get("tax_direction", "")
+            ta = dec(m.get("tax_amount", "0")) if regime and m.get("tax_part") != "input_tax" else Decimal(0)
+            if direction == "sale":
+                tax, gross = ta, p.amount + ta
+            else:
+                rec = dec(m.get("recoverable", "1"))
+                if ta and rec != 1:
+                    warnings.append(f"{t.date} {t.payee}: only part of the input VAT is deductible. Check this booking")
+                tax = q(ta * rec, book.prec)
+                gross = p.amount + tax - (ta if regime in SELF_ASSESSED else 0)
+            total += gross
+            if gross:
+                rows.append({"txn": t, "date": t.date, "account": p.account, "anchor": anchor.account, "gross": gross,
+                             "tax": tax, "regime": regime, "rate": m.get("tax_rate", ""), "direction": direction,
+                             "type": m.get("tax_type", ""), "party_tax_id": t.meta.get("party_tax_id", ""),
+                             "ref": t.meta.get("document_number") or p.meta.get("document_number") or t.meta.get("txn_id", ""),
+                             "text": " ".join(x for x in (t.payee, t.narration) if x)})
+        if total != -anchor.amount:
+            warnings.append(f"{t.date} {t.payee}: the rows are off by {total + anchor.amount} after folding in VAT")
+    return rows, warnings
+
+
+def need_codes(book: Book, accounts) -> dict:
+    # A customer or supplier account books under its Personenkonto number (from Billpal's contacts).
+    codes = {a: str(account_attr(book, a, "personenkonto") or account_attr(book, a, "code")) for a in accounts}
+    missing = sorted(a for a, c in codes.items() if not c.isdigit())
+    if missing:
+        raise LedgerError([f"{a}: no account number. Add its code, or for a customer or supplier its Personenkonto "
+                           "(with Billpal: the contact's account number)" for a in missing]
+                          + ["Ask the accountant for all of these numbers at once"])
+    return codes
+
+
+def export_datev(book: Book, rows: list[dict], start: date, end: date, consultant: str | None, client: str | None,
+                 gl_length: int) -> tuple[bytes, list[str]]:
+    errs = []
+    if book.currency != "EUR":
+        errs.append("DATEV takes books in EUR")
+    if not (consultant or "").isdigit() or not (client or "").isdigit():
+        errs.append("DATEV needs the Beraternummer (--consultant) and Mandantennummer (--client) from the accountant")
+    if errs:
+        raise LedgerError(errs)
+    codes = need_codes(book, {r[k] for r in rows for k in ("account", "anchor")})
+    out, warnings = [], []
+    for r in rows:
+        key, auto = "", account_attr(book, r["account"], "auto_tax")
+        taxed = r["regime"] in ("standard", "reverse_charge", "intra_community") and r["rate"] not in ("", "0")
+        if auto:
+            if r["regime"] != "standard" or r["rate"] != auto:
+                errs.append(f"{r['date']} {r['text']}: {r['account']} applies {auto} % VAT by itself in DATEV, "
+                            f"this booking is {r['regime']} {r['rate'] or '0'} %. Book it on another account")
+        elif taxed and r["type"] in VAT_LIKE:
+            key = DATEV_KEYS.get((r["direction"], r["regime"], r["rate"]))
+            if key is None:
+                errs.append(f"{r['date']} {r['text']}: no DATEV tax key for a {r['direction']} {r['regime']} {r['rate']} %")
+                continue
+        elif r["direction"] == "sale" and r["regime"] not in ("", "standard", "out_of_scope"):
+            warnings.append(f"{r['date']} {r['text']}: a {r['regime']} sale needs the matching DATEV account "
+                            "(SKR03 8125, 8120, 8336). Check it with the accountant")
+        f = [""] * len(DATEV_COLUMNS)
+        f[0] = format(abs(r["gross"]), "f").replace(".", ",")
+        f[1] = "S" if r["gross"] < 0 else "H"
+        f[6], f[7], f[8] = codes[r["anchor"]], codes[r["account"]], key
+        f[9] = r["date"].strftime("%d%m")
+        f[10], f[13] = export_clean(r["ref"], 36), export_clean(r["text"], 60)
+        if key in ("94", "95", "42", "43"):
+            vat_id = eu_vat_id(r["party_tax_id"])
+            if vat_id:
+                f[DATEV_EU_VAT] = vat_id
+                f[DATEV_EU_RATE] = f"{r['rate']},00" if key in ("42", "43") else ""
+            else:
+                warnings.append(f"{r['date']} {r['text']}: no EU VAT ID of the supplier for tax key {key}. "
+                                "The accountant adds it in DATEV, or add it to the contact in Billpal")
+        out.append(";".join(v if i in DATEV_NUMBER_COLS or v == "" else '"' + v.replace('"', '""') + '"'
+                            for i, v in enumerate(f)))
+    if errs:
+        raise LedgerError(errs)
+    skr = {"skr03": "03", "skr04": "04"}.get(book.profile.get("chart") or "", "")
+    head = [""] * 31
+    head[:6] = ["EXTF", "700", "21", "Buchungsstapel", "13", datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f")[:17]]
+    head[7], head[10], head[11] = "RE", consultant, client
+    head[12], head[13] = book.fy_from.strftime("%Y%m%d"), str(gl_length)
+    head[14], head[15], head[16] = start.strftime("%Y%m%d"), end.strftime("%Y%m%d"), "Buchungsstapel"
+    head[18], head[19], head[20], head[21], head[26] = "1", "0", "0", "EUR", skr
+    header = ";".join('"' + v + '"' if i in DATEV_HEADER_QUOTED else v for i, v in enumerate(head))
+    text = "\r\n".join([header, ";".join(DATEV_COLUMNS), *out]) + "\r\n"
+    return text.encode("cp1252", errors="replace"), warnings
+
+
+def export_bmd(book: Book, rows: list[dict]) -> tuple[bytes, list[str]]:
+    if book.currency != "EUR":
+        raise LedgerError("BMD takes books in EUR")
+    codes = need_codes(book, {r[k] for r in rows for k in ("account", "anchor")})
+    comma = lambda v: format(v, "f").replace(".", ",")
+    numbers, out = {}, []
+    for r in rows:
+        t, betrag = r["txn"], -r["gross"]
+        taxed = r["type"] in VAT_LIKE and r["regime"]
+        code = (BMD_CODES.get((r["direction"], r["regime"]), "80" if r["direction"] == "purchase" else "81")
+                if taxed else "")
+        belegnr = numbers.setdefault(id(t), str(len(numbers) + 1))
+        doc_day = opt_date(t.meta.get("document_date"), "document_date") or r["date"]
+        out.append(["0", codes[r["anchor"]], codes[r["account"]], BMD_SYMBOLS.get(book.role_of(r["anchor"]) or "", "SO"),
+                    belegnr, export_clean(r["ref"], 60), r["date"].strftime("%d.%m.%Y"), doc_day.strftime("%d.%m.%Y"),
+                    "1" if betrag > 0 else "2", code, comma(betrag), r["rate"] if taxed and r["rate"] != "0" else "",
+                    comma(r["tax"]) if taxed and r["tax"] else "", export_clean(r["text"], 255), "", "EUR", "", "", "", ""])
+    text = "\r\n".join(";".join(row) for row in [BMD_HEADER, *out]) + "\r\n"
+    return text.encode("utf-8"), []
+
+
+def us_date(book: Book, d: date) -> str:
+    return d.strftime("%m/%d/%Y" if book.profile.get("country") == "US" else "%d/%m/%Y")
+
+
+def export_journal(book: Book, txns: list[Entry], fmt_name: str, tax_rate: str | None,
+                   clearing: str | None) -> tuple[bytes, list[str]]:
+    """Every posting as a journal line; the VAT accounts are lines like any other."""
+    buf = io.StringIO()
+    w = csv.writer(buf, lineterminator="\r\n")
+    if fmt_name == "qbo-journal":
+        w.writerow(["Journal No.", "Journal Date", "Account Name", "Debits", "Credits", "Description", "Name"])
+        for t in txns:
+            for p in t.postings:
+                name = book.accounts[p.account]["meta"].get("name") or p.account.split(":")[-1]
+                party = (p.meta.get("party") or t.payee) if book.role_of(p.account) in PARTY_ROLES else ""
+                w.writerow([t.meta.get("txn_id", ""), us_date(book, t.date), csv_guard(name),
+                            fmt(p.amount, book.prec) if p.amount > 0 else "", fmt(-p.amount, book.prec) if p.amount < 0 else "",
+                            csv_guard(export_clean(f"{t.payee} {t.narration}", 4000)), csv_guard(party)])
+        return buf.getvalue().encode("utf-8"), []
+    rate = tax_rate or XERO_NO_TAX.get(book.profile.get("country") or "")
+    if not rate:
+        raise LedgerError("give --tax-rate: the name of the no-tax rate in the Xero organisation, for example No VAT")
+    used = {p.account for t in txns for p in t.postings}
+    system = {a for a in used if book.role_of(a) in XERO_SYSTEM_ROLES}
+    if system and not clearing:
+        raise LedgerError("Xero takes no bank, receivable, payable or retained earnings account in a manual journal. "
+                          f"Give --clearing-code, a clearing account in Xero, for {sorted(system)}")
+    codes = need_codes(book, used - system)
+    w.writerow(["*Narration", "*Date", "Description", "*AccountCode", "*TaxRate", "*Amount"])
+    for t in txns:
+        for p in t.postings:
+            w.writerow([csv_guard(export_clean(f"{t.payee} {t.narration}", 4000)), us_date(book, t.date),
+                        csv_guard(p.account), clearing if p.account in system else codes[p.account], rate,
+                        fmt(p.amount, book.prec)])
+    warnings = [f"lines on {sorted(system)} went to the clearing account {clearing}. Clear it against the bank in Xero"] if system else []
+    return buf.getvalue().encode("utf-8"), warnings
+
+
+def build_export(book: Book, fmt_name: str, start: date, end: date, out_dir: Path, **opts) -> dict:
+    txns = export_txns(book, start, end)
+    if fmt_name in ("datev", "bmd", "dvo"):
+        rows, warnings = export_rows(book, txns)
+        if fmt_name == "datev":
+            data, more = export_datev(book, rows, start, end, opts.get("consultant"), opts.get("client"), opts.get("gl_length") or 4)
+            name = "EXTF_Buchungsstapel.csv"
+        else:
+            data, more = export_bmd(book, rows)
+            name = "Buchungen.csv"
+        count = len(rows)
+    else:
+        warnings = []
+        data, more = export_journal(book, txns, fmt_name, opts.get("tax_rate"), opts.get("clearing"))
+        name, count = f"{fmt_name}.csv", sum(len(t.postings) for t in txns)
+    rep = readiness(book, min(end, book.fy_to))
+    if not rep["ready"]:
+        warnings.insert(0, "the books are not ready for this period: " + "; ".join(f["code"] for f in rep["fails"]))
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / name).write_bytes(data)
+    return {"written": str(out_dir / name), "format": fmt_name, "rows": count, "bookings": len(txns),
+            "warnings": warnings + more}
 
 
 # ── CLI ──────────────────────────────────────────────────────────────────────
@@ -4008,6 +4815,12 @@ def parser() -> argparse.ArgumentParser:
     p = sub.add_parser("from-camt", help="CAMT.053 XML to statement JSON")
     p.add_argument("file")
     p.add_argument("--ledger", required=True)
+    p.add_argument("--out")
+    p = sub.add_parser("from-ofx", help="OFX, QFX or QBO download to statement JSON")
+    p.add_argument("file")
+    p.add_argument("--ledger", required=True)
+    p.add_argument("--account", required=True)
+    p.add_argument("--source-id")
     p.add_argument("--out")
     p = sub.add_parser("from-csv", help="bank CSV to statement JSON with a csv_map from the ledger")
     p.add_argument("file")
@@ -4076,6 +4889,17 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--delimiter")
     p.add_argument("--decimal")
     p.add_argument("--bom", action=argparse.BooleanOptionalAction, default=None)
+    p = sub.add_parser("export", help="bookings for the accountant's software: DATEV, BMD, QuickBooks or Xero")
+    p.add_argument("ledger")
+    p.add_argument("--format", choices=EXPORT_FORMATS, required=True)
+    p.add_argument("--out-dir", required=True)
+    p.add_argument("--from", dest="start")
+    p.add_argument("--to", dest="end")
+    p.add_argument("--consultant", help="DATEV Beraternummer")
+    p.add_argument("--client", help="DATEV Mandantennummer")
+    p.add_argument("--gl-length", type=int, help="DATEV Sachkontenlänge, 4 by default")
+    p.add_argument("--tax-rate", help="Xero: the name of the no-tax rate")
+    p.add_argument("--clearing-code", help="Xero: clearing account for bank, receivable and payable lines")
     p = sub.add_parser("writeback", help="Billpal payment updates proven by the ledger")
     p.add_argument("ledger")
     p.add_argument("--documents", help="documents/1 file, for totals in cash-basis books")
@@ -4113,15 +4937,17 @@ def run(args) -> dict:
         parent = args.parent or book.one_role(args.parent_role)
         path, existing = account_path(book, parent, args.name, args.code)
         return {"account": path, "exists": existing}
-    if args.cmd in ("from-camt", "from-csv"):
+    if args.cmd in ("from-camt", "from-csv", "from-ofx"):
         data = Path(args.file).read_bytes()
         if args.cmd == "from-camt":
             st = from_camt(data, book)
+        elif args.cmd == "from-ofx":
+            st = from_ofx(data, book, args.account, args.source_id)
         else:
             st = from_csv(data, book, args.map, args.account, args.start, args.end, args.opening, args.closing, args.source_id)
         for s in st["statements"]:
             s["file"] = Path(args.file).name
-        out = _out(args.out, Path(args.file).with_suffix(".statement.json"))
+        out = _out(args.out, book.path.with_name(f"{Path(args.file).stem}.statement.json"))
         out.write_text(json.dumps(st, ensure_ascii=False, indent=1), encoding="utf-8")
         return {"written": str(out), "statements": [{"source_id": s["source_id"], "account": s["account"], "rows": len(s["rows"]),
                                                      "from": s["from"], "to": s["to"]} for s in st["statements"]]}
@@ -4182,11 +5008,15 @@ def run(args) -> dict:
         return build_rollover(book, opt_date(args.to), args.label, args.write)
     if args.cmd == "writeback":
         return writeback(book, load_json(args.documents) if args.documents else None)
-    if args.cmd == "report":
+    if args.cmd in ("report", "export"):
         start = opt_date(args.start) or book.fy_from
         end = opt_date(args.end) or min(book.fy_to, max((t.date for t in book.txns), default=book.fy_from))
         if not book.fy_from <= start <= end <= book.fy_to:
-            raise LedgerError(f"report dates must lie in the fiscal year {book.fy_from} to {book.fy_to}, from before to")
+            raise LedgerError(f"{args.cmd} dates must lie in the fiscal year {book.fy_from} to {book.fy_to}, from before to")
+    if args.cmd == "export":
+        return build_export(book, args.format, start, end, Path(args.out_dir), consultant=args.consultant,
+                            client=args.client, gl_length=args.gl_length, tax_rate=args.tax_rate, clearing=args.clearing_code)
+    if args.cmd == "report":
         lang = args.lang or book.profile.get("language", "en")
         data = build_report(book, start, end, args.by, lang)
         formats = {f.strip() for f in args.format.split(",") if f.strip()}
