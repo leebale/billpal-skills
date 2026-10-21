@@ -32,16 +32,35 @@
   .kpi { border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; }
   .kpi b { display: block; font-size: 20px; margin-top: 2px; }
   .kpi span { color: var(--muted); font-size: 12px; }
+  /* Expandable rows: account, then party, then bookings in a soft panel. Children indent to the parent's label. */
   details { border-bottom: 1px solid var(--line); }
-  details details { margin-left: 16px; border-bottom: 0; }
-  summary { cursor: pointer; display: flex; justify-content: space-between; gap: 12px; padding: 6px 8px; }
-  summary b { font-weight: 600; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  details[open] { padding-bottom: 12px; }
+  details > details { margin-left: 18px; }
+  details > div { margin-left: 8px; }
+  details details { border-bottom: 0; }
+  details details[open] { padding-bottom: 6px; }
+  summary { cursor: pointer; display: flex; align-items: baseline; gap: 10px; padding: 10px 8px; list-style: none; border-radius: 8px; }
+  details details > summary { padding: 7px 8px; }
+  summary::-webkit-details-marker { display: none; }
+  summary::before { content: ""; flex: none; width: 6px; height: 6px; margin-left: 2px; border: solid var(--muted); border-width: 0 1.5px 1.5px 0; transform: translateY(-2px) rotate(-45deg); transition: transform .15s; }
+  details[open] > summary::before { transform: translateY(-3px) rotate(45deg); }
+  details[open] > summary > span:first-child { font-weight: 600; }
+  summary:hover { background: var(--soft); }
+  summary:focus { outline: none; }
+  summary:focus-visible { outline: 2px solid #84adff; outline-offset: -2px; }
+  details .wrap { background: var(--soft); border-radius: 10px; padding: 2px 12px; margin: 2px 0 6px; }
+  details th { background: transparent; position: static; }
+  details tr:last-child td { border-bottom: 0; }
+  details .empty { margin: 4px 0 8px; font-size: 13px; }
+  summary b { margin-left: auto; font-weight: 600; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  #pnl table { table-layout: fixed; } #pnl th:first-child { width: 72px; } #pnl th:nth-child(2) { width: 34%; }
+  .result { margin-top: 20px; } .result td { font-size: 15px; }
   summary span.muted { color: var(--muted); font-weight: 400; }
   .filters { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 12px; }
   .filters input, .filters select { font: inherit; border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; }
   .filters input { flex: 1; min-width: 200px; }
   footer { margin-top: 48px; color: var(--muted); font-size: 12px; }
-  @media print { nav { display: none; } details > * { display: block; } h2 { break-before: auto; } th { position: static; } main { padding: 0; } }
+  @media print { nav, summary::before { display: none; } details > * { display: block; } h2 { break-before: auto; } th { position: static; } main { padding: 0; } }
 </style>
 </head>
 <body>
@@ -58,16 +77,16 @@
     reconciled: "Summen stimmen", notReconciled: "Summen stimmen nicht", pnl: "Gewinn und Verlust",
     pnlCash: "Einnahmen und Ausgaben", bs: "Bilanz", bsCash: "Kontensalden", vat: "Umsatzsteuer", items: "Offene Posten",
     assets: "Anlagenverzeichnis", missing: "Buchungen ohne Beleg", tb: "Summen- und Saldenliste", account: "Konto",
-    code: "Nr.", name: "Bezeichnung", total: "Summe", result: "Ergebnis", income: "Erträge", expenses: "Aufwände",
+    code: "Nr.", name: "Bezeichnung", total: "Summe", result: "Ergebnis", income: "Erträge", expenses: "Aufwendungen", incomeCash: "Einnahmen", expensesCash: "Ausgaben",
     assetsSide: "Aktiva", liabilities: "Verbindlichkeiten", equity: "Eigenkapital", opening: "Anfang", debit: "Soll",
     credit: "Haben", closing: "Ende", direction: "Richtung", sale: "Umsatz", purchase: "Einkauf", regime: "Behandlung",
     rate: "Satz", base: "Bemessung", tax: "USt", inputTax: "Vorsteuer", payable: "Zahllast", codes: "Kennzahlen",
     party: "Partner", number: "Nummer", date: "Datum", due: "Fällig", amount: "Betrag", open: "Offen", overdue: "Tage überfällig",
     receivable: "Forderung", payableSide: "Verbindlichkeit", cost: "Anschaffung", prior: "AfA bisher", thisYear: "AfA dieses Jahr",
-    booked: "gebucht", bookValue: "Buchwert Ende", none: "Keine Einträge", booking: "Buchung", notFiling: "Zusammenfassung, keine Steuererklärung.",
+    booked: "Gebucht", count: "Anzahl", vatBookings: "Buchungen je Zeitraum", bookValue: "Buchwert Ende", none: "Keine Einträge", booking: "Buchung", notFiling: "Zusammenfassung, keine Steuererklärung.",
     source: "Erstellt aus", resultYear: "Ergebnis des Geschäftsjahres", taxes: "Steuern", taxType: "Steuer",
     taxGeneric: "Steuer", types: { vat: "USt", gst: "GST", sales_tax: "Sales Tax", other: "Andere" },
-    drill: "Konten im Detail", bookings: "Buchungen", text: "Text", document: "Beleg", byParty: "Nach Partner",
+    drill: "Konten im Detail", bookings: "Buchungen", bookingOne: "Buchung", noParty: "Ohne Partner", text: "Text", document: "Beleg", byParty: "Nach Partner",
     firstBookings: "Einzelne Buchungen", jurisdiction: "Steuergebiet", useTax: "Use Tax",
     regimes: { standard: "Normal", reverse_charge: "Reverse Charge", intra_community: "Innergemeinschaftlich",
       exempt: "Steuerfrei", zero: "Nullsatz", export: "Ausfuhr", out_of_scope: "Nicht steuerbar", import: "Einfuhr" },
@@ -82,16 +101,16 @@
     reconciled: "Totals reconcile", notReconciled: "Totals do not reconcile", pnl: "Profit and loss",
     pnlCash: "Income and expenses", bs: "Balance sheet", bsCash: "Account balances", vat: "VAT", items: "Open items",
     assets: "Asset register", missing: "Bookings without a receipt", tb: "Trial balance", account: "Account",
-    code: "Code", name: "Name", total: "Total", result: "Result", income: "Income", expenses: "Expenses",
+    code: "Code", name: "Name", total: "Total", result: "Result", income: "Income", expenses: "Expenses", incomeCash: "Income", expensesCash: "Expenses",
     assetsSide: "Assets", liabilities: "Liabilities", equity: "Equity", opening: "Opening", debit: "Debit",
     credit: "Credit", closing: "Closing", direction: "Direction", sale: "Sales", purchase: "Purchases", regime: "Treatment",
     rate: "Rate", base: "Base", tax: "Output tax", inputTax: "Input tax", payable: "Payable", codes: "Report codes",
     party: "Party", number: "Number", date: "Date", due: "Due", amount: "Amount", open: "Open", overdue: "Days overdue",
     receivable: "Receivable", payableSide: "Payable", cost: "Cost", prior: "Depreciated before", thisYear: "This year",
-    booked: "booked", bookValue: "Book value at end", none: "Nothing here", booking: "Booking", notFiling: "A summary, not a filing.",
+    booked: "Booked", count: "Count", vatBookings: "Bookings by period", bookValue: "Book value at end", none: "Nothing here", booking: "Booking", notFiling: "A summary, not a filing.",
     source: "Built from", resultYear: "Result for the fiscal year", taxes: "Taxes", taxType: "Tax",
     taxGeneric: "Tax collected", types: { vat: "VAT", gst: "GST", sales_tax: "Sales tax", other: "Other" },
-    drill: "Accounts in detail", bookings: "bookings", text: "Description", document: "Document", byParty: "By party",
+    drill: "Accounts in detail", bookings: "bookings", bookingOne: "booking", noParty: "No party", text: "Description", document: "Document", byParty: "By party",
     firstBookings: "Single bookings", jurisdiction: "Jurisdiction", useTax: "Use tax",
     regimes: { standard: "Standard", reverse_charge: "Reverse charge", intra_community: "Intra-EU", exempt: "Exempt",
       zero: "Zero-rated", export: "Export", out_of_scope: "Out of scope", import: "Import" },
@@ -101,9 +120,15 @@
     taxForm: "Tax form (draft)", draft: "A draft for your accountant, not a filing.",
     line: "Line", unmapped: "Accounts without a line, your accountant assigns them", notDeductible: "Not deductible"
   };
-  var locale = de ? (m.country === "AT" ? "de-AT" : "de-DE") : "en-GB";
+  // de-AT groups thousands with a space; Austrian accountants write 1.234,56 like German ones.
+  var locale = de ? "de-DE" : "en-GB";
   var digits = typeof m.precision === "number" ? m.precision : 2;
   var nf = new Intl.NumberFormat(locale, { minimumFractionDigits: digits, maximumFractionDigits: digits });
+  function day(d) { return de && /^\d{4}-\d{2}-\d{2}$/.test(d || "") ? d.slice(8, 10) + "." + d.slice(5, 7) + "." + d.slice(0, 4) : d || ""; }
+  var pct = de ? " %" : "%";
+  var acctNames = {};
+  data.trial_balance.forEach(function (r) { acctNames[r.account] = [r.code, r.name].filter(Boolean).join(" "); });
+  function acctName(a) { return acctNames[a] || a; }
   var vatOnly = (data.vat.types || []).every(function (t) { return t === "vat"; });
   var salesOnly = (data.vat.types || []).length > 0 && data.vat.types.every(function (t) { return t === "sales_tax"; });
   var vatTitle = vatOnly ? L.vat : salesOnly ? L.types.sales_tax : L.taxes;
@@ -115,6 +140,7 @@
     if (text !== undefined && text !== null) e.textContent = String(text);
     return e;
   }
+  // numeric[i]: true formats an amount, "right" only right-aligns the cell.
   function table(head, rows, numeric, totalRow) {
     var wrap = el("div", { class: "wrap" });
     if (!rows.length) { wrap.appendChild(el("p", { class: "empty" }, L.none)); return wrap; }
@@ -126,7 +152,7 @@
       var row = el("tr", totalRow && ri === rows.length ? { class: "total" } : null);
       r.forEach(function (c, i) {
         if (c instanceof Node) { var td = el("td"); td.appendChild(c); row.appendChild(td); return; }
-        row.appendChild(el("td", numeric[i] ? { class: "n" } : null, numeric[i] ? num(c) : c));
+        row.appendChild(el("td", numeric[i] ? { class: "n" } : null, numeric[i] === true ? num(c) : c));
       });
       tb.appendChild(row);
     });
@@ -146,20 +172,44 @@
   function periodOf(d, by) {
     return by === "month" ? d.slice(0, 7) : by === "quarter" ? d.slice(0, 4) + "-Q" + (Math.floor((Number(d.slice(5, 7)) - 1) / 3) + 1) : d.slice(0, 4);
   }
-  var LIMIT = 200;
-  function lines(rows, sign) {
+  var LIMIT = 200, SHOWN = 50;
+  function lines(rows, sign, amountLabel) {
     var box = el("div");
-    box.appendChild(table([L.date, L.party, L.text, L.document, L.amount], rows.slice(0, LIMIT).map(function (j) {
-      return [j.date, j.payee, j.narration, docCell(j.document, j.document_url), sign * Number(j.amount)];
+    box.appendChild(table([L.date, L.party, L.text, L.document, amountLabel || L.amount], rows.slice(0, LIMIT).map(function (j) {
+      return [day(j.date), j.payee, j.narration, docCell(j.document, j.document_url), sign * Number(j.amount)];
     }), [false, false, false, false, true]));
     if (rows.length > LIMIT) box.appendChild(el("p", { class: "empty" }, L.more(rows.length - LIMIT)));
     return box;
   }
-  function drill(label, amount, rows, sign) {
+  // One row per party, then that party's bookings. Postings of one booking on the same account add up to one line.
+  function byParty(rows, sign) {
+    var parties = {}, list = [];
+    rows.forEach(function (j) {
+      var name = j.payee || L.noParty, p = parties[name];
+      if (!p) { p = parties[name] = { name: name, total: 0, txns: {}, keys: [] }; list.push(p); }
+      var key = j.txn_id || j.date + "|" + j.narration;
+      if (!p.txns[key]) { p.txns[key] = { date: j.date, text: j.narration, document: j.document, url: j.document_url, amount: 0 }; p.keys.push(key); }
+      p.txns[key].amount += sign * Number(j.amount); p.total += sign * Number(j.amount);
+    });
+    return list.sort(function (a, b) { return Math.abs(b.total) - Math.abs(a.total); }).map(function (p) {
+      var d = el("details"), sm = el("summary"), label = el("span", null, p.name);
+      label.appendChild(el("span", { class: "muted" }, " · " + p.keys.length + " " + (p.keys.length === 1 ? L.bookingOne : L.bookings)));
+      sm.appendChild(label); sm.appendChild(el("b", null, num(p.total))); d.appendChild(sm);
+      d.appendChild(table([L.date, L.text, L.document, L.amount], p.keys.slice(0, LIMIT).map(function (k) {
+        var t = p.txns[k]; return [day(t.date), t.text, docCell(t.document, t.url), t.amount];
+      }), [false, false, false, true]));
+      if (p.keys.length > LIMIT) d.appendChild(el("p", { class: "empty" }, L.more(p.keys.length - LIMIT)));
+      return d;
+    });
+  }
+  // Built on first open, so a large ledger renders fast. `flat` (true, or a label for the amount column) lists bookings without the party level.
+  function drill(label, amount, rows, sign, flat) {
     var d = el("details"), sm = el("summary");
     sm.appendChild(el("span", null, label)); sm.appendChild(el("b", null, num(amount))); d.appendChild(sm);
     d.addEventListener("toggle", function once() {
-      if (d.open && d.childNodes.length === 1) d.appendChild(lines(rows, sign));
+      if (!d.open || d.childNodes.length > 1) return;
+      if (flat) d.appendChild(lines(rows, sign, flat === true ? null : flat));
+      else byParty(rows, sign).forEach(function (c) { d.appendChild(c); });
     });
     return d;
   }
@@ -168,9 +218,10 @@
 
   var app = document.getElementById("app");
   var cash = m.basis === "cash";
-  document.title = (m.title || L.title) + " " + m.from + " – " + m.to;
+  if (cash) { L.income = L.incomeCash; L.expenses = L.expensesCash; }
+  document.title = (m.title || L.title) + " " + day(m.from) + " – " + day(m.to);
   app.appendChild(el("h1", null, m.title || L.title));
-  app.appendChild(el("p", { class: "sub" }, L.period + ": " + m.from + " – " + m.to + " · " + m.currency));
+  app.appendChild(el("p", { class: "sub" }, L.period + ": " + day(m.from) + " – " + day(m.to) + " · " + m.currency));
   var badges = el("div", { class: "badges" });
   badges.appendChild(el("span", { class: "badge " + (m.ready ? "good" : "bad") }, m.ready ? L.ready : L.notReady));
   badges.appendChild(el("span", { class: "badge " + (m.reconciled ? "good" : "bad") }, m.reconciled ? L.reconciled : L.notReconciled));
@@ -229,32 +280,21 @@
   if (data.pnl.length) {
     // One row per booking under each account, with only that account's postings: the bank leg never adds in.
     s = section("drill", L.drill);
-    data.pnl.forEach(function (r) {
-      var sign = r.group === "Income" ? -1 : 1, payees = {}, total = 0;
-      (byAcct[r.account] || []).forEach(function (j) {
-        var p = payees[j.payee] = payees[j.payee] || { name: j.payee, total: 0, txns: {}, order: [] };
-        var key = j.txn_id || j.date + "|" + j.narration;
-        if (!p.txns[key]) { p.txns[key] = { date: j.date, text: j.narration, document: j.document, url: j.document_url, amount: 0 }; p.order.push(key); }
-        p.txns[key].amount += sign * Number(j.amount); p.total += sign * Number(j.amount); total += sign * Number(j.amount);
+    [[L.income, income], [L.expenses, expenses]].forEach(function (g) {
+      if (!g[1].length) return;
+      s.appendChild(el("h3", null, g[0]));
+      g[1].forEach(function (r) {
+        var rows = byAcct[r.account] || [], sign = r.group === "Income" ? -1 : 1;
+        s.appendChild(drill([r.code, r.name].filter(Boolean).join(" "), sign * sum(rows, function (j) { return j.amount; }), rows, sign));
       });
-      var acct = el("details"), head = el("summary");
-      head.appendChild(el("span", null, [r.code, r.name].filter(Boolean).join(" "))); head.appendChild(el("b", null, num(total)));
-      acct.appendChild(head);
-      Object.keys(payees).map(function (k) { return payees[k]; })
-        .sort(function (a, b) { return Math.abs(b.total) - Math.abs(a.total); })
-        .forEach(function (p) {
-          var d = el("details"), sm = el("summary"), label = el("span", null, p.name || "?");
-          label.appendChild(el("span", { class: "muted" }, " · " + p.order.length + " " + L.bookings));
-          sm.appendChild(label); sm.appendChild(el("b", null, num(p.total))); d.appendChild(sm);
-          d.appendChild(table([L.date, L.text, L.document, L.amount], p.order.map(function (k) {
-            var t = p.txns[k]; return [t.date, t.text, docCell(t.document, t.url), t.amount];
-          }), [false, false, false, true]));
-          acct.appendChild(d);
-        });
-      s.appendChild(acct);
     });
   }
 
+  function totalLine(label, amount, cls) {
+    var wrap = el("div", { class: "wrap" + (cls ? " " + cls : "") }), t = el("table"), tr = el("tr", { class: "total" });
+    tr.appendChild(el("td", null, label)); tr.appendChild(el("td", { class: "n" }, num(amount)));
+    t.appendChild(tr); wrap.appendChild(t); return wrap;
+  }
   s = section("bs", cash ? L.bsCash : L.bs);
   var bs = data.balance_sheet;
   [[L.assetsSide, bs.assets, bs.assets_total], [L.liabilities, bs.liabilities, bs.liabilities_total],
@@ -265,33 +305,39 @@
     g[1].forEach(function (r) {
       s.appendChild(drill([r.code, r.name].filter(Boolean).join(" "), r.amount, byAcct[r.account] || [], sign));
     });
-    var tot = el("div", { class: "wrap" }), tt = el("table"), tr = el("tr", { class: "total" });
-    tr.appendChild(el("td", null, L.total)); tr.appendChild(el("td", { class: "n" }, num(g[2])));
-    tt.appendChild(tr); tot.appendChild(tt); s.appendChild(tot);
+    s.appendChild(totalLine(L.total, g[2]));
   });
-  s.appendChild(el("p", null, L.resultYear + ": " + num(bs.result)));
+  s.appendChild(totalLine(L.resultYear, bs.result, "result"));
 
   function typeName(t) { return L.types[t] || t; }
   function regimeName(r) { return r.type === "sales_tax" && r.regime === "reverse_charge" ? L.useTax : L.regimes[r.regime] || r.regime; }
-  function jur(cells, r) { return withJur ? cells.slice(0, 2).concat([r.jurisdiction || ""], cells.slice(2)) : cells; }
-  function jurFlags(flags) { return withJur ? flags.slice(0, 2).concat([false], flags.slice(2)) : flags; }
+  // Columns: period, tax type (only with more than one), jurisdiction (only when any row has one), then the rest.
+  var oneType = (data.vat.types || []).length <= 1;
+  function jur(cells, r) {
+    var c = withJur ? cells.slice(0, 2).concat([r.jurisdiction || ""], cells.slice(2)) : cells;
+    return oneType ? c.slice(0, 1).concat(c.slice(2)) : c;
+  }
   if (data.vat.lines.length || data.vat.totals.length) {
     s = section("vat", vatTitle);
     s.appendChild(el("p", { class: "sub" }, L.notFiling));
     s.appendChild(table(jur([L.period, L.taxType, L.direction, L.regime, L.rate, L.base, vatOnly ? L.tax : L.taxGeneric, L.inputTax], { jurisdiction: L.jurisdiction }),
-      data.vat.lines.map(function (r) { return jur([r.period, typeName(r.type), r.direction === "sale" ? L.sale : L.purchase, regimeName(r), r.rate + " %", r.base, r.tax, r.input_tax], r); }),
-      jurFlags([false, false, false, false, false, true, true, true])));
+      data.vat.lines.map(function (r) { return jur([r.period, typeName(r.type), r.direction === "sale" ? L.sale : L.purchase, regimeName(r), r.rate + pct, r.base, r.tax, r.input_tax], r); }),
+      jur([false, false, false, false, "right", true, true, true], { jurisdiction: false })));
     s.appendChild(el("h3", null, L.payable));
     var withDue = data.vat.totals.some(function (r) { return r.due; });
-    var dueCol = function (cells, r) { return withDue ? cells.concat([r ? r.due || "" : L.due]) : cells; };
+    var dueCol = function (cells, r) { return withDue ? cells.concat([r ? day(r.due) : L.due]) : cells; };
     s.appendChild(table(dueCol(jur([L.period, L.taxType, vatOnly ? L.tax : L.taxGeneric, L.inputTax, L.payable], { jurisdiction: L.jurisdiction })),
       data.vat.totals.map(function (r) { return dueCol(jur([r.period, typeName(r.type), r.tax, r.input_tax, r.payable], r), r); }),
-      dueCol(jurFlags([false, false, true, true, true]), { due: false })));
+      jur([false, false, true, true, true], { jurisdiction: false }).concat(withDue ? ["right"] : [])));
     var taxed = data.journal.filter(function (j) { return j.tax_regime && !j.tax_part; });
-    data.vat.totals.forEach(function (r) {
+    var perPeriod = data.vat.totals.map(function (r) {
       var rows = taxed.filter(function (j) { return j.tax_type === r.type && periodOf(j.tax_point || j.date, data.vat.period) === r.period; });
-      if (rows.length) s.appendChild(drill(r.period + " · " + typeName(r.type) + (r.jurisdiction ? " " + r.jurisdiction : ""), r.payable, rows, -1));
-    });
+      return rows.length ? drill(r.period + (oneType ? "" : " · " + typeName(r.type)) + (r.jurisdiction ? " " + r.jurisdiction : ""), r.payable, rows, -1, L.base) : null;
+    }).filter(Boolean);
+    if (perPeriod.length) {
+      s.appendChild(el("h3", null, L.vatBookings));
+      perPeriod.forEach(function (d) { s.appendChild(d); });
+    }
     if (data.vat.codes.length) {
       s.appendChild(el("h3", null, L.codes));
       s.appendChild(table([L.period, L.code, L.amount], data.vat.codes.map(function (r) { return [r.period, r.code, r.amount]; }),
@@ -303,8 +349,8 @@
     s = section("items", L.items);
     s.appendChild(table([L.party, L.number, L.date, L.due, L.amount, L.open, L.overdue, ""],
       data.open_items.map(function (r) {
-        return [r.party, r.number, r.date, r.due, r.amount, r.open, String(r.days_overdue), r.side === "receivable" ? L.receivable : L.payableSide];
-      }), [false, false, false, false, true, true, false, false]));
+        return [r.party, r.number, day(r.date), day(r.due), r.amount, r.open, String(r.days_overdue), r.side === "receivable" ? L.receivable : L.payableSide];
+      }), [false, false, false, false, true, true, "right", false]));
   }
 
   if (data.assets.length) {
@@ -317,12 +363,12 @@
   if (m.missing_receipts_count) {
     s = section("missing", L.missing);
     s.appendChild(el("h3", null, L.byParty));
-    s.appendChild(table([L.party, L.bookings, L.amount], data.missing_receipts_by_party.map(function (r) {
+    s.appendChild(table([L.party, L.count, L.amount], data.missing_receipts_by_party.map(function (r) {
       return [r.payee, String(r.count), r.amount];
-    }), [false, true, true]));
+    }), [false, "right", true]));
     s.appendChild(el("h3", null, L.firstBookings));
-    s.appendChild(table([L.date, L.party, L.account, L.text, L.amount], data.missing_receipts.map(function (r) {
-      return [r.date, r.payee, r.account, r.narration, r.amount];
+    s.appendChild(table([L.date, L.party, L.text, L.account, L.amount], data.missing_receipts.map(function (r) {
+      return [day(r.date), r.payee, r.narration, acctName(r.account), r.amount];
     }), [false, false, false, false, true]));
   }
 
@@ -343,21 +389,22 @@
     var bar = el("div", { class: "filters" }), q = el("input", { type: "search", placeholder: L.searchHint, "aria-label": L.searchHint });
     var pick = el("select", { "aria-label": L.account });
     pick.appendChild(el("option", { value: "" }, L.allAccounts));
-    Object.keys(byAcct).sort().forEach(function (a) { pick.appendChild(el("option", { value: a }, a)); });
+    Object.keys(byAcct).sort(function (a, b) { return acctName(a).localeCompare(acctName(b), locale, { numeric: true }); })
+      .forEach(function (a) { pick.appendChild(el("option", { value: a }, acctName(a))); });
     bar.appendChild(q); bar.appendChild(pick); s.appendChild(bar);
     var count = el("p", { class: "sub" }), out = el("div");
     s.appendChild(count); s.appendChild(out);
     var hay = data.journal.map(function (j) {
-      return [j.date, j.payee, j.narration, j.account, j.code, j.document, j.amount, String(j.amount).replace(".", ","), num(j.amount)].join(" ").toLowerCase();
+      return [j.date, day(j.date), j.payee, j.narration, j.account, acctName(j.account), j.document, j.amount, String(j.amount).replace(".", ","), num(j.amount)].join(" ").toLowerCase();
     });
     var render = function () {
       var words = q.value.toLowerCase().split(/\s+/).filter(Boolean), acct = pick.value;
       var hits = data.journal.filter(function (j, i) {
         return (!acct || j.account === acct) && words.every(function (w) { return hay[i].indexOf(w) >= 0; });
       });
-      count.textContent = L.shown(Math.min(hits.length, LIMIT), hits.length);
-      out.replaceChildren(table([L.date, L.party, L.text, L.account, L.document, L.amount], hits.slice(0, LIMIT).map(function (j) {
-        return [j.date, j.payee, j.narration, j.account, docCell(j.document, j.document_url), j.amount];
+      count.textContent = L.shown(Math.min(hits.length, SHOWN), hits.length);
+      out.replaceChildren(table([L.date, L.party, L.text, L.account, L.document, L.amount], hits.slice(0, SHOWN).map(function (j) {
+        return [day(j.date), j.payee, j.narration, acctName(j.account), docCell(j.document, j.document_url), j.amount];
       }), [false, false, false, false, false, true]));
     };
     q.addEventListener("input", render); pick.addEventListener("change", render); render();
