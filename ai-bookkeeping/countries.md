@@ -6,7 +6,7 @@ These rules set defaults and warnings. They are not legal advice and they are no
 
 Report codes (Kennzahlen on the VAT return) are `null` in this skill until each mapping has been checked against the current form. Do not write a Kennzahl into `report_codes` from memory. When the user gives you the mapping (for example from their accountant), store it on the rule or the booking and say where it came from.
 
-`ledger.py` holds the depreciation defaults and the standard VAT rate below in `COUNTRY_RULES`. Everything else here is guidance for you.
+`ledger.py` holds the depreciation defaults, the standard VAT rate, and the list of VAT rates (AT, DE) below in `COUNTRY_RULES`. It refuses any other VAT rate, except foreign VAT on a bill booked as a cost (`recoverable` `"0"`) and a sale at another EU country's rate under the One-Stop Shop, which gives `jurisdiction` and its own output VAT account. When a new rate comes into force, it must be added there. Everything else here is guidance for you.
 
 ## Every country
 
@@ -14,11 +14,13 @@ Report codes (Kennzahlen on the VAT return) are `null` in this skill until each 
 
 **A balance in another currency (for example a Wise USD balance).** The ledger has one currency, so a foreign balance is kept as a clearing account in the ledger currency:
 
-- Open one clearing account per balance, for example `Assets:Wallet-USD` with role `clearing`.
+- Open one clearing account per balance, for example `Assets:Wallet-USD` with role `clearing` and `holds` `USD`. `holds` keeps it out of the readiness check for money stuck in transit.
 - A conversion from the euro account books against it at the euro amount that left the euro account.
 - Spending from the foreign balance (a card payment in USD paid from the USD balance) is booked with `journal`, from that balance's statement: the expense against `Assets:Wallet-USD` at the euro value of the conversion it came from, with the USD amount in the meta (`"meta": {"original": "100.00 USD"}`). Without this, those costs are missing from the books.
 - At the end of each VAT period, when the foreign balance is zero, book what is left on the clearing account to the FX account (role `fx_diff`) with one journal entry.
 - The script keeps no statement chain for the foreign balance (it cannot check balances in another currency). Ask the user for the balance's statement each period and compare the totals by hand.
+
+**A fiscal year that is not the calendar year.** VAT periods and the annual VAT return follow the calendar year, whatever the fiscal year. With a shifted fiscal year, one calendar year's VAT is split across two ledger files: add both files' VAT reports for the annual return, and never present one file's total as the year's VAT. The same goes for US 1099s: `contractors_1099` counts only the payments in this file.
 
 **Reverse charge derived by the commit (AT and DE).** When a bill from a supplier abroad shows no VAT, `commit --documents` books reverse charge at the standard rate. It assumes a service. A goods invoice from abroad is rebooked as `import` or `intra_community`. Small businesses owe reverse charge VAT on some foreign services too, without deducting it, so their derived bookings, like everyone's, stay unconfirmed until the user (or the accountant) confirms them. Billpal stores reverse charge at 0 % or without a rate; the script fills in the standard rate below in the same way. Germany has no standard rate for 2020 in the script (16 % from July to December), so nothing is derived for that year.
 
@@ -27,12 +29,14 @@ Report codes (Kennzahlen on the VAT return) are `null` in this skill until each 
 | Topic | Rule | Years | Source |
 |---|---|---|---|
 | VAT rates | 20 % standard, 10 % and 13 % reduced | 2016– | UStG 1994 § 10 |
+| VAT rate on basic foods | 4.9 % for the foods in Anlage 3 (milk, yoghurt, butter, eggs, vegetables, fruit, rice, wheat flour, pasta, bread, salt), sold or imported; not in restaurants | from 1 July 2026 | UStG 1994 § 10 Abs. 1a, Anlage 3 (BGBl. I Nr. 37/2026) |
 | Kleinunternehmer | VAT-exempt up to 55,000 EUR gross turnover a year (`vat_status` `small_business`). No VAT on sales, no input VAT | 2025– | UStG 1994 § 6 Abs. 1 Z 27 |
 | Kleinunternehmer before 2025 | 35,000 EUR net | 2020–2024 | UStG 1994 § 6 Abs. 1 Z 27 (old version) |
 | VAT period | UVA monthly when last year's turnover was above 100,000 EUR, otherwise quarterly | 2011– | UStG 1994 § 21 |
 | UVA due date | The return and the payment are due on the 15th of the second month after the period (for Q1: 15 May). The report shows the date next to each period, moved past a weekend; public holidays are not known | – | UStG 1994 § 21 Abs. 1; BAO § 108 |
 | Payment-basis VAT (Istbesteuerung) | The law's default for freelancers (§ 22 Z 1 EStG, at any turnover), for traders not required to keep double-entry books, and for others whose turnover was at most 110,000 EUR in one of the two previous years. Sollbesteuerung only on application, or when the business must keep double-entry books (a GmbH or FlexCo always does). Propose `vat_basis` `payment` for a sole trader on cash basis and `invoice` for a company, then let the user confirm. Input VAT then also counts when paid (`input_vat_basis` follows `vat_basis`, which is the default for AT) | 2019– | UStG 1994 § 17 Abs. 1 and 2, § 12 Abs. 1 Z 1; USP "Zeitpunkt des Entstehens der Steuerschuld" (as of 1 Jan 2026) |
 | Cash basis | Einnahmen-Ausgaben-Rechnung (`basis` `cash`) | – | EStG 1988 § 4 Abs. 3 |
+| Turn of the year (cash basis) | Regularly recurring income and costs paid within 15 days before or after the turn of the year count in the year they belong to (for example the UVA for November, due 15 January). Readiness lists candidates (`year_end_cutoff`); the accountant decides | – | EStG 1988 § 19 Abs. 1 and 2 |
 | GWG | Assets up to 1,000 EUR net can be written off in full in the year bought | 2023– | EStG 1988 § 13 |
 | GWG before 2023 | 800 EUR | 2020–2022 | EStG 1988 § 13 (old version) |
 | First-year depreciation | Put into service in the second half of the year: half a year's depreciation (`first_year` `half_year`) | – | EStG 1988 § 7 Abs. 2 |
@@ -57,8 +61,9 @@ Things that come up in almost every Austrian small business:
 | VAT rates | 19 % standard, 7 % reduced | 2007– (except 2nd half 2020: 16 % and 5 %) | UStG § 12 |
 | Kleinunternehmer | No VAT when last year's turnover was at most 25,000 EUR and this year's stays at most 100,000 EUR (`vat_status` `small_business`) | 2025– | UStG § 19 |
 | Kleinunternehmer before 2025 | 22,000 EUR last year, 50,000 EUR expected this year | 2020–2024 | UStG § 19 (old version) |
-| VAT basis | The invoice basis (Soll-Versteuerung) is the default. The payment basis (Ist-Versteuerung) needs the tax office's permission, usually asked for in the registration questionnaire: allowed when last year's turnover was at most 800,000 EUR, when the business is exempt from keeping books, or for freelance turnover without double-entry books. Propose `vat_basis` `invoice` unless the user says they have the permission. Input VAT stays on the invoice basis either way (`input_vat_basis` `invoice`, the default for DE) | 2024– | UStG § 13 Abs. 1 Nr. 1, § 16, § 20, § 15; BFH V R 16/24 (16 Apr 2026) |
+| VAT basis | The invoice basis (Soll-Versteuerung) is the default. The payment basis (Ist-Versteuerung) needs the tax office's permission, usually asked for in the registration questionnaire: allowed when last year's turnover was at most 800,000 EUR, when the business is exempt from keeping books, or for freelance turnover without double-entry books. Propose `vat_basis` `invoice` unless the user says they have the permission. On cash-basis books with the invoice basis, readiness lists unpaid sales invoices with their VAT for the accountant (`sales_unpaid`). Input VAT stays on the invoice basis either way (`input_vat_basis` `invoice`, the default for DE) | 2024– | UStG § 13 Abs. 1 Nr. 1, § 16, § 20, § 15; BFH V R 16/24 (16 Apr 2026) |
 | Cash basis | Einnahmen-Überschuss-Rechnung allowed while not required to keep double-entry books: turnover up to 800,000 EUR and profit up to 80,000 EUR a year | 2024– | AO § 141 |
+| Turn of the year (cash basis) | Regularly recurring income and costs paid within 10 days before or after the turn of the year, and due in that window, count in the year they belong to (for example the UStVA for December paid by 10 January without a Dauerfristverlängerung). Readiness lists candidates (`year_end_cutoff`); the accountant decides | – | EStG § 11 Abs. 1 Satz 2, Abs. 2 Satz 2 |
 | GWG | Assets up to 800 EUR net can be written off in full in the year bought | 2018– | EStG § 6 Abs. 2 |
 | First-year depreciation | Monthly, from the month put into service (`first_year` `monthly`) | – | EStG § 7 Abs. 1 Satz 4 |
 | Computers and software | A useful life of one year may be used | 2021– | BMF-Schreiben vom 22.02.2022 |

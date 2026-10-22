@@ -12,6 +12,7 @@ Run `python ledger.py --help` for the commands. SKILL.md explains the workflow.
 from __future__ import annotations
 
 import argparse
+import base64
 import csv
 import functools
 import hashlib
@@ -58,8 +59,9 @@ TAXED_REGIMES = {"standard", "reverse_charge", "intra_community", "import"}
 SELF_ASSESSED = {"reverse_charge", "intra_community"}
 CUSTOM_TYPES = {
     "ledger", "version", "profile", "rule", "csv_map", "asset", "statement", "closed",
-    "confirm", "review_hold", "allocation", "question",
+    "confirm", "review_hold", "allocation", "question", "unpaid_sale",
 }
+UNPAID_SALE_KEYS = {"document", "date", "number", "party", "total", "vat", "currency"}
 QUESTION_KEYS = {"id", "question", "proposal", "evidence", "answer"}
 CONFIRM_KINDS = {"booking", "tax", "document_review"}
 # Tax types a VAT registration covers. US sales tax is a cost, not input tax.
@@ -92,15 +94,21 @@ MINOR_UNITS_3 = {"BHD", "IQD", "JOD", "KWD", "LYD", "OMR", "TND"}
 # Depreciation defaults by country and effective year. `None` means no default:
 # the asset record must say it. Sources are listed in countries.md.
 COUNTRY_RULES = {
+    # vat_rates: every rate of the year, for checking. AT 4.9 % from 1 July 2026 (UStG § 10 Abs. 1a), 5 % from July
+    # 2020 to 2021; DE 16 % and 5 % from July to December 2020.
     "AT": [
-        {"from": 2023, "to": None, "gwg_limit": "1000", "first_year": "half_year", "vat_standard": "20"},
-        {"from": 2020, "to": 2022, "gwg_limit": "800", "first_year": "half_year", "vat_standard": "20"},
+        {"from": 2026, "to": None, "gwg_limit": "1000", "first_year": "half_year", "vat_standard": "20",
+         "vat_rates": ["20", "13", "10", "4.9"]},
+        {"from": 2023, "to": 2025, "gwg_limit": "1000", "first_year": "half_year", "vat_standard": "20",
+         "vat_rates": ["20", "13", "10"]},
+        {"from": 2020, "to": 2022, "gwg_limit": "800", "first_year": "half_year", "vat_standard": "20",
+         "vat_rates": ["20", "13", "10", "5"]},
     ],
     # 2020 has no vat_standard: Germany charged 16 % from July to December.
     "DE": [
-        {"from": 2021, "to": None, "gwg_limit": "800", "first_year": "monthly", "vat_standard": "19"},
-        {"from": 2020, "to": 2020, "gwg_limit": "800", "first_year": "monthly"},
-        {"from": 2018, "to": 2019, "gwg_limit": "800", "first_year": "monthly", "vat_standard": "19"},
+        {"from": 2021, "to": None, "gwg_limit": "800", "first_year": "monthly", "vat_standard": "19", "vat_rates": ["19", "7"]},
+        {"from": 2020, "to": 2020, "gwg_limit": "800", "first_year": "monthly", "vat_rates": ["19", "16", "7", "5"]},
+        {"from": 2018, "to": 2019, "gwg_limit": "800", "first_year": "monthly", "vat_standard": "19", "vat_rates": ["19", "7"]},
     ],
     # The de minimis safe harbor, per item or invoice, for a business without audited statements.
     "US": [{"from": 2016, "to": None, "gwg_limit": "2500"}],
@@ -108,6 +116,8 @@ COUNTRY_RULES = {
 # VAT return and payment due: months after the period ends, and the day (AT UStG § 21 Abs. 1; DE UStG § 18 Abs. 1).
 # A DE Dauerfristverlängerung (§ 46 UStDV, profile vat_extension) adds a month.
 VAT_DUE = {"AT": (2, 15), "DE": (1, 10)}
+# Cash basis: regularly recurring payments shortly before or after the turn of the year count in the year they are for.
+YEAR_END_CUTOFF = {"AT": (15, "EStG 1988 § 19"), "DE": (10, "EStG § 11")}
 
 # Text that banks put around the counterparty name. Removed for vendor grouping only.
 NOISE_WORDS = re.compile(
@@ -487,6 +497,7 @@ class Book:
         self.profile, self.rules, self.csv_maps, self.assets, self.allocations = {}, {}, {}, {}, {}
         self.questions = {}
         self.accounts, self.txns, self.balances, self.holds = {}, [], [], []
+        self.unpaid_sales = {}  # document id -> (ledger line, entry)
         self.custom_errors = []
         for e in self.entries:
             if e.kind == "open":
@@ -534,6 +545,8 @@ class Book:
                     self.confirms.append(v)
                 elif e.ctype == "review_hold":
                     self.holds.append(v)
+                elif e.ctype == "unpaid_sale":
+                    self.unpaid_sales.setdefault(str(v.get("document")), (e.line, v))
                 elif e.ctype == "question":
                     self.questions[str(v.get("id"))] = {**self.questions.get(str(v.get("id")), {}), **v}
         if self.ledger is None:
@@ -822,6 +835,9 @@ def validate(book: Book) -> list[str]:
         errs.append("option operating_currency must match the ledger currency")
     if book.fy_from > book.fy_to:
         errs.append("fiscal_year_from is after fiscal_year_to")
+    # Up to 53 weeks: a US 52-53-week year can run a few days past 12 months.
+    if (book.fy_to - book.fy_from).days > 370:
+        errs.append(f"the fiscal year {book.fy_from} to {book.fy_to} is longer than 12 months")
     if lg.get("opening") not in ("booked", "new_business", "missing"):
         errs.append("ledger opening must be booked, new_business or missing")
     ns = [int(v.get("n", 0)) for _, v in book.versions]
@@ -895,8 +911,12 @@ def validate(book: Book) -> list[str]:
                 except LedgerError as exc:
                     errs += exc.messages
                     continue
+                # A sales invoice listed as unpaid before the close was filed with that period: its payment keeps the
+                # invoice date as tax point, or the VAT counts twice.
+                listed = book.unpaid_sales.get(str(t.meta.get("document")), (None,))[0]
                 for cline, through in closed_marks:
-                    if t.line > cline and tp <= through:
+                    if (t.line > cline and tp <= through
+                            and not (p.meta.get("tax_direction") == "sale" and listed is not None and listed < cline)):
                         errs.append(f"{where}: tax point {tp} is in the period closed through {through}. "
                                     "A late correction goes into an open period")
                         break
@@ -943,7 +963,8 @@ def validate_rule(rule: dict, book: Book) -> None:
     if not rid or not isinstance(rid, str):
         raise LedgerError("rule needs a text id")
     allowed = {"id", "text", "iban", "money", "amount_min", "amount_max", "on_account", "account", "tax",
-               "payee", "priority", "disabled", "needs_review", "note", "share", "private_account", "deductible"}
+               "payee", "priority", "disabled", "needs_review", "note", "share", "private_account", "deductible",
+               "user_said"}
     match_spec(rule, book, f"rule {rid}", allowed)
     if rule.get("deductible") is not None:
         parse_share(rule["deductible"], f"rule {rid} deductible")
@@ -952,7 +973,7 @@ def validate_rule(rule: dict, book: Book) -> None:
 
 
 ALLOCATION_KEYS = {"id", "text", "iban", "money", "amount_min", "amount_max", "account", "tax", "share", "basis",
-                   "private_account", "from", "to", "every", "topic", "document", "payee", "note", "disabled"}
+                   "private_account", "from", "to", "every", "topic", "document", "payee", "note", "disabled", "user_said"}
 
 
 def validate_allocation(a: dict, book: Book) -> None:
@@ -1162,6 +1183,15 @@ def _expand_line(book: Book, line: dict, amount: Decimal, d: date, where: str, *
     jur = t["jurisdiction"]
     if jur:
         base_meta["tax_jurisdiction"] = tax_meta["tax_jurisdiction"] = jur
+    rates = country_rule(book, point.year).get("vat_rates")
+    if rates and t["type"] in VAT_LIKE and regime in TAXED_REGIMES and rate and rate not in {Decimal(r) for r in rates}:
+        # Foreign VAT on a bill is a cost here (recoverable 0); a sale at another EU country's rate (OSS) names it.
+        foreign_ok = (regime == "standard" and (direction == "sale" and jur is not None
+                                                 or direction == "purchase" and t["recoverable"] == 0))
+        if not foreign_ok:
+            raise LedgerError(f"{where}: {rate_str(rate)} % is not a {book.profile.get('country')} VAT rate in {point.year} "
+                              f"({', '.join(rates)}). Foreign VAT on a bill is a cost: give recoverable 0. "
+                              "A sale at another EU country's rate (OSS) gives jurisdiction")
     if (regime in SELF_ASSESSED and direction == "purchase" and rate == 0 and t["type"] in VAT_LIKE
             and book.profile.get("vat_status") in ("regular", "small_business")):
         raise LedgerError(f"{where}: {regime} at 0 % books no VAT. The 0 % is what the supplier charged; the buyer "
@@ -1299,7 +1329,8 @@ def write_next(book: Book, body: str, note: str) -> Book:
 
 
 ACCOUNT_SPEC_KEYS = {"account", "name", "code", "role", "personenkonto", "iban", "tax_regime", "tax_rate",
-                     "description", "date", "billpal_account", "tax_jurisdiction", "partner", "share", "auto_tax", "tax_line"}
+                     "description", "date", "billpal_account", "tax_jurisdiction", "partner", "share", "auto_tax", "tax_line",
+                     "holds"}
 
 
 def open_text(book: Book, specs) -> str:
@@ -1326,9 +1357,11 @@ def open_text(book: Book, specs) -> str:
             raise LedgerError(f"account {acct}: unknown tax_regime {s['tax_regime']!r}")
         meta = {}
         for k in ("role", "code", "name", "personenkonto", "iban", "tax_regime", "tax_rate", "description", "billpal_account",
-                  "tax_jurisdiction", "partner", "share", "auto_tax", "tax_line"):
+                  "tax_jurisdiction", "partner", "share", "auto_tax", "tax_line", "holds"):
             if s.get(k) not in (None, ""):
                 meta[k] = s[k]
+        if "holds" in meta and not (s.get("role") == "clearing" and re.fullmatch(r"[A-Z]{3}", str(meta["holds"]))):
+            raise LedgerError(f"account {acct}: holds is the currency code (like USD) of a balance kept on a clearing account")
         for k in ("tax_rate", "auto_tax"):
             if k in meta:
                 meta[k] = rate_str(parse_rate(meta[k], f"account {acct} {k}"))
@@ -1368,11 +1401,22 @@ def account_path(book: Book, parent: str, name: str, code: str | None = None,
     return cand, False
 
 
+def user_words(spec: dict, where: str) -> str:
+    """The user's own reply that agreed to a booking, rule or confirmation, kept so the accountant can see it."""
+    said = clean_text(spec.get("user_said"))[:200]
+    if not said:
+        raise LedgerError(f"{where}: needs user_said, the user's own words agreeing to it (quote their reply)")
+    return said
+
+
 def custom_entries(book: Book, spec: dict) -> str:
     """Rules, CSV maps, assets and confirmations from an input file, validated."""
     out = []
+    carried = bool(spec.get("previous"))  # rules and allocations from last year's file were agreed there
     for rule in spec.get("rules") or []:
         validate_rule(rule, book)
+        if not (carried or rule.get("needs_review") or rule.get("disabled")):
+            user_words(rule, f"rule {rule.get('id')}")
         out.append(ser_custom(book.fy_from, "rule", rule))
     for cmap in spec.get("csv_maps") or []:
         validate_csv_map(cmap)
@@ -1382,17 +1426,26 @@ def custom_entries(book: Book, spec: dict) -> str:
         out.append(ser_custom(book.fy_from, "asset", asset))
     for a in spec.get("allocations") or []:
         validate_allocation(a, book)
+        if not (carried or a.get("disabled")):
+            user_words(a, f"allocation {a.get('id')}")
         out.append(ser_custom(book.fy_from, "allocation", a))
     for c in spec.get("confirmations") or []:
         if not isinstance(c, dict) or c.get("kind") not in CONFIRM_KINDS or not isinstance(c.get("ref"), str):
             raise LedgerError(f"confirmation {c!r}: needs kind ({sorted(CONFIRM_KINDS)}) and ref")
-        out.append(ser_custom(book.fy_from, "confirm", {"kind": c["kind"], "ref": c["ref"], "note": clean_text(c.get("note"))}))
+        out.append(ser_custom(book.fy_from, "confirm", {"kind": c["kind"], "ref": c["ref"], "note": clean_text(c.get("note")),
+                                                        "user_said": user_words(c, f"confirmation {c['ref']}")}))
     for h in spec.get("review_holds") or []:
         if not isinstance(h, dict) or not isinstance(h.get("document"), str) or set(h) - {"document", "date", "note"}:
             raise LedgerError(f"review hold {h!r}: needs document, date and an optional note")
         hd = parse_date(h.get("date"), f"review hold {h['document']} date")
         out.append(ser_custom(min(max(hd, book.fy_from), book.fy_to), "review_hold",
                               {"document": h["document"], "date": hd.isoformat(), "note": clean_text(h.get("note"))}))
+    for s in spec.get("unpaid_sales") or []:
+        if not isinstance(s, dict) or set(s) - UNPAID_SALE_KEYS or not isinstance(s.get("document"), str):
+            raise LedgerError(f"unpaid sale {s!r}: needs document, and only {sorted(UNPAID_SALE_KEYS)}")
+        sd = parse_date(s.get("date"), f"unpaid sale {s['document']} date")
+        out.append(ser_custom(min(max(sd, book.fy_from), book.fy_to), "unpaid_sale",
+                              {k: clean_text(v) for k, v in s.items() if v is not None}))
     for qn in spec.get("questions") or []:
         if not isinstance(qn, dict) or set(qn) - QUESTION_KEYS or not isinstance(qn.get("id"), str) or not qn["id"]:
             raise LedgerError(f"question {qn!r}: needs an id, and only {sorted(QUESTION_KEYS)}")
@@ -1660,7 +1713,7 @@ def country_rule(book: Book, year: int) -> dict:
 JOURNAL_KEYS = {"schema", "entries", "accounts", "rules", "csv_maps", "assets", "profile", "confirmations",
                 "review_holds", "allocations", "questions", "note"}
 ENTRY_KEYS = {"date", "payee", "narration", "lines", "meta", "confirmed", "classified_by", "document",
-              "documents", "no_document", "document_review", "opening"}
+              "documents", "no_document", "document_review", "opening", "user_said"}
 
 
 def entry_meta(entry: dict, where: str) -> dict:
@@ -1670,6 +1723,8 @@ def entry_meta(entry: dict, where: str) -> dict:
         raise LedgerError(f"{where}: confirmed is user, rule, document or no")
     meta["classified_by"] = clean_text(entry.get("classified_by") or "agent")
     meta["confirmed"] = confirmed
+    if confirmed == "user":
+        meta["user_said"] = user_words(entry, where)
     docs = entry.get("documents") or ([entry["document"]] if entry.get("document") else [])
     if len(docs) == 1:
         meta["document"] = docs[0]
@@ -1867,6 +1922,28 @@ def missing_receipt_txns(book: Book, scope) -> list[Entry]:
             and not has_document(t)]
 
 
+TRANSIT_DAYS = 10  # a bank transfer over a weekend and public holidays (Christmas to the new year)
+
+
+def clearing_stuck(book: Book, through: date) -> list[str]:
+    """Clearing accounts that have held money without a break for more than TRANSIT_DAYS up to `through`.
+    A clearing account that `holds` a foreign balance (a Wise USD wallet) stays open on purpose."""
+    out = []
+    for acct in sorted(a for a in book.accounts if book.role_of(a) == "clearing"):
+        if (book.accounts.get(acct) or {}).get("meta", {}).get("holds"):
+            continue
+        dates, cum = book._index().get(acct, ([], []))
+        since, bal = None, Decimal(0)
+        for d, c in zip(dates, cum):
+            if d > through:
+                break
+            bal = c
+            since = None if c == 0 else since or d
+        if since and (through - since).days > TRANSIT_DAYS:
+            out.append(f"{acct}: {fmt(bal, book.prec)} since {since}")
+    return out
+
+
 def readiness(book: Book, through: date | None, year_end: bool = False, folder: Path | None = None) -> dict:
     through = book.fy_to if year_end else (through or book.fy_to)
     fails, warns = [], []
@@ -1952,6 +2029,10 @@ def readiness(book: Book, through: date | None, year_end: bool = False, folder: 
             gaps += [f"{acct}: {g}" for g in coverage_gaps(book, acct, start, end)]
     if gaps:
         fail("statements_missing", "Periods without a statement", gaps)
+    stuck = clearing_stuck(book, through)
+    if stuck:
+        fail("clearing_open", f"Money in transit for more than {TRANSIT_DAYS} days: the other side of a transfer is "
+                              "missing (a statement not imported, or booked to another account)", stuck)
     if book.ledger.get("opening") == "missing" and not any(t.meta.get("opening") for t in book.txns):
         fail("opening_missing", "Opening balances are not booked")
     if book.basis == "accrual":
@@ -1994,6 +2075,14 @@ def readiness(book: Book, through: date | None, year_end: bool = False, folder: 
     gap = vat_payment_gap(book, through)
     if gap:
         warn("vat_payments", gap)
+    in_ledger = book.documents_in_ledger()
+    sales = [f"{v['date']} {v.get('number') or v['document']} {v.get('party') or ''}: {v.get('total')} {v.get('currency')}, "
+             f"VAT {v.get('vat')} ({v['document']})"
+             for _, v in book.unpaid_sales.values()
+             if v["document"] not in in_ledger and parse_date(v["date"], "unpaid sale date") <= through]
+    if sales:
+        warn("sales_unpaid", "Sales invoices not paid yet. With VAT on the invoice basis their VAT is due for the "
+                             "invoice's period anyway: the accountant adds it to that VAT return", sales)
     open_q = [f"{qn['id']}: {qn.get('question')}" for qn in book.questions.values() if not qn.get("answer")]
     if open_q:
         warn("open_questions", "Questions for the user or the accountant that are still open", open_q)
@@ -2026,7 +2115,7 @@ ASSETISH = re.compile(r"Equipment|Hardware|Computer|Office|Supplies|Materials|To
 
 def review_flags(book: Book, scope: list) -> list[tuple[str, str, list]]:
     """What an accountant would ask about. Warnings only: each one can be fine."""
-    cur, out = book.currency, []
+    cur, out, scope = book.currency, [], list(scope)
     pays = []
     for t in scope:
         money = [p for p in t.postings if book.role_of(p.account) in MONEY_ROLES]
@@ -2047,6 +2136,8 @@ def review_flags(book: Book, scope: list) -> list[tuple[str, str, list]]:
             i = steps[-1]
             up.append(f"{xs[i][0].payee}: {xs[i - 1][1]} to {xs[i][1]} {cur} on {xs[i][0].date}")
     out.append(("price_increase", "A recurring payment that went up", up))
+    # ponytail: the limit of the year the fiscal year starts in. In a shifted year, a new limit is
+    # flagged against from the next file on; check each booking's date if that ever matters.
     limit = country_rule(book, book.fy_from.year).get("gwg_limit")
     if limit:
         # ponytail: only accounts whose name suggests equipment; a big "Repairs" bill is not flagged.
@@ -2056,18 +2147,44 @@ def review_flags(book: Book, scope: list) -> list[tuple[str, str, list]]:
                if base > dec(limit)]
         out.append(("above_asset_limit", f"Expenses above the {limit} {cur} limit for low-value assets: "
                                          "equipment that lasts several years is an asset", big))
+    cutoff = YEAR_END_CUTOFF.get(book.profile.get("country") or "")
+    if cutoff and book.basis == "cash":
+        days, law = cutoff
+        flows = []
+        for t in scope:
+            money = [p for p in t.postings if book.role_of(p.account) in MONEY_ROLES]
+            if not t.meta.get("opening") and t.payee and len(money) == 1:
+                flows.append((t, norm_text(t.payee), money[0].amount))
+        months = defaultdict(set)
+        for t, key, _ in flows:
+            months[key].add((t.date.year, t.date.month))
+        # ponytail: "recurring" is a payee seen in three months of this file, so early in a year only tax
+        # office payments are caught; the accountant knows the rest.
+        tax_office = lambda t: any(p.account == "Liabilities:Tax-Office" or (
+            book.role_of(p.account) in ("vat_in", "vat_out") and not p.meta.get("tax_part")) for p in t.postings)
+        near = lambda d: (d - book.fy_from).days < days or (book.fy_to - d).days < days
+        out.append(("year_end_cutoff", f"Regular payments within {days} days of the turn of the year: they may count in the "
+                                       f"year they are for, not the year paid ({law}; for example a VAT prepayment paid in "
+                                       "January for the last year). Ask the accountant",
+                    [f"{t.date} {t.payee} {amount}" for t, key, amount in flows
+                     if near(t.date) and (len(months[key]) >= 3 or tax_office(t))]))
     if book.profile.get("country") == "US":
-        floor = Decimal(2000 if book.fy_from.year >= 2026 else 600)
+        # 1099s are per calendar year, which a shifted fiscal year splits in two.
+        # ponytail: only this file's part of each calendar year is counted; the neighbouring file has the rest.
+        floor = lambda y: Decimal(2000 if y >= 2026 else 600)
+        years = range(book.fy_from.year, book.fy_to.year + 1)
         paid = defaultdict(Decimal)
         for t, key, amount, role in pays:
             # a debit card pays from the bank account too, but card payments go on 1099-K
             card = CARD_TEXT.search(norm_text(f"{t.narration} {t.meta.get('counterparty', '')}"))
             if role in ("bank", "cash") and not card and any(
                     account_attr(book, p.account, "tax_line") == "11" or "Contractors" in p.account for p in t.postings):
-                paid[t.payee] += amount
-        out.append(("contractors_1099", f"Contractors paid {floor} USD or more by bank transfer or check: 1099-NEC "
-                                        "candidates (ask for a W-9; card and PayPal payments are reported on 1099-K)",
-                    [f"{k}: {v}" for k, v in sorted(paid.items()) if v >= floor]))
+                paid[(t.date.year, t.payee)] += amount
+        floors = " or ".join(str(f) for f in sorted({floor(y) for y in years}))
+        out.append(("contractors_1099", f"Contractors paid {floors} USD or more in a calendar year by bank transfer or check: "
+                                        "1099-NEC candidates (ask for a W-9; card and PayPal payments are reported on 1099-K)",
+                    [f"{k}: {v}" if len(years) == 1 else f"{y} {k}: {v}"
+                     for (y, k), v in sorted(paid.items()) if v >= floor(y)]))
     return out
 
 
@@ -2846,7 +2963,8 @@ def pending_summary(pending: dict) -> dict:
 DECISION_KEYS = {"schema", "groups", "rows", "documents", "accounts", "rules", "assets", "confirmations",
                  "accept_suggested", "note", "csv_maps", "review_holds"}
 ROW_DECISION_KEYS = {"ref", "vendor_key", "decision", "payee", "narration", "lines", "documents", "document",
-                     "no_document", "confirmed", "classified_by", "match", "document_review", "meta", "settles"}
+                     "no_document", "confirmed", "classified_by", "match", "document_review", "meta", "settles",
+                     "user_said"}
 
 
 def check_pending(book: Book, pending: dict) -> None:
@@ -2888,6 +3006,19 @@ def full_match(book: Book, r: dict, source: dict, doc: dict | None) -> bool:
     return str(fx.get("currency") or "").upper() == doc["currency"] and abs(dec(fx["amount"])) >= doc["total"]
 
 
+def exact_document(pool: dict, r: dict, source: dict) -> bool:
+    """The row pays one open document exactly: the same test as an `exact` candidate, checked here rather than
+    taken from the model's `match` text."""
+    ids = [source["document"]] if source.get("document") else source.get("documents") or []
+    p = pool.get(ids[0]) if len(ids) == 1 else None
+    if p is None:
+        return False
+    amt, fx = dec(r["amount"]), r.get("fx") or {}
+    if p["fx"] and str(fx.get("currency") or "").upper() == p["currency"]:
+        return (p["sign"] > 0) == (amt > 0) and abs(dec(fx["amount"])) == p["original_total"]
+    return p["pay"] is not None and p["pay"] == amt
+
+
 def build_commit(book: Book, pending: dict, decisions: dict | None, documents: dict | None = None) -> Book:
     check_pending(book, pending)
     if pending.get("kind") != "statement":
@@ -2903,6 +3034,9 @@ def build_commit(book: Book, pending: dict, decisions: dict | None, documents: d
     if auto:
         decisions = {**decisions, "review_holds": [*(decisions.get("review_holds") or []), *auto]}
     work, body = prepare_decisions(book, decisions)
+    new_sales = [s for s in pending.get("unpaid_sales") or [] if s.get("document") not in book.unpaid_sales]
+    if new_sales:
+        body += custom_entries(work, {"unpaid_sales": new_sales})
     by_ref, by_group = {}, {}
     for d in decisions.get("rows") or []:
         if set(d) - ROW_DECISION_KEYS:
@@ -2912,7 +3046,7 @@ def build_commit(book: Book, pending: dict, decisions: dict | None, documents: d
         if set(g) - ROW_DECISION_KEYS:
             raise LedgerError(f"group decision {g.get('vendor_key')}: unknown fields {sorted(set(g) - ROW_DECISION_KEYS)}")
         by_group[g.get("vendor_key")] = g
-    unresolved, txns = [], []
+    unresolved, txns, not_exact, pool = [], [], [], None
     for st in pending["statements"]:
         if st["status"] == "already_booked":
             continue
@@ -2940,6 +3074,11 @@ def build_commit(book: Book, pending: dict, decisions: dict | None, documents: d
             for doc_id in [source["document"]] if source.get("document") else source.get("documents") or []:
                 if doc_id in unreadable:
                     raise LedgerError(f"{r['ref']}: document {doc_id} could not be read: {unreadable[doc_id]}")
+            if source.get("confirmed") == "document":
+                if pool is None:
+                    pool = {p["document"]: p for p in candidate_pool(book, documents)}
+                if not exact_document(pool, r, source):
+                    not_exact.append(f"{r['ref']} {r['booking_date']} {r['amount']} {source.get('document') or source.get('documents')}")
             txns.append(statement_txn(work, st, r, source, docs))
             booked += 1
             for doc_id in [source["document"]] if source.get("document") else source.get("documents") or []:
@@ -2951,6 +3090,10 @@ def build_commit(book: Book, pending: dict, decisions: dict | None, documents: d
         txns.append(ser_custom(end, "statement", info) + ser_balance(end + timedelta(days=1), acct, dec(st["closing"]), book.currency, book.prec))
     if unresolved:
         raise LedgerError([f"{len(unresolved)} rows have no decision yet:"] + unresolved[:30])
+    if not_exact:
+        raise LedgerError(["confirmed document is only for a row that pays one open document exactly (pass it with "
+                           "--documents on cash books). Show these in the preview and confirm them with the user:"]
+                          + not_exact[:30])
     in_ledger = book.documents_in_ledger() if book.basis == "cash" else set()
     # An invoice and its linked receipt are one purchase: a full match of either is a full match of both.
     kind = lambda x: (docs.get(x) or {}).get("kind")
@@ -3017,7 +3160,7 @@ def statement_txn(book: Book, st: dict, r: dict, source: dict, docs: dict | None
     posts += expand_lines(book, user_tax(lines, source.get("confirmed")), amount, d, where,
                           require_tax=True, cash_rows=True)
     meta = entry_meta({k: source.get(k) for k in ("confirmed", "classified_by", "document", "documents", "no_document",
-                                                  "document_review", "meta") if source.get(k) is not None}
+                                                  "document_review", "meta", "user_said") if source.get(k) is not None}
                       | {"confirmed": source.get("confirmed", "no")}, where)
     meta.update({"source_statement": st["source_id"], "source_row": str(r["seq"]), "row_key": r["row_key"]})
     for k in ("bank_id", "value_date", "counterparty", "iban", "reference", "check_number"):
@@ -3156,7 +3299,7 @@ def doc_url(value, where: str) -> str | None:
     return value
 DOC_LINE_KEYS = {"description", "amount", "amount_is", "tax", "account", "account_code"}
 DOC_DECISION_KEYS = {"id", "decision", "party_account", "lines", "confirmed", "classified_by", "applies_to",
-                     "review_resolved", "party_confirmed"}
+                     "review_resolved", "party_confirmed", "user_said"}
 DOC_LINE_DECISION_KEYS = {"index", "account", "tax", "amount_is", "asset"}
 DOC_KINDS = {"invoice", "credit_note", "receipt", "reminder", "other"}
 
@@ -3514,6 +3657,8 @@ def doc_txn(book: Book, raw: dict, dd: dict, sug: dict) -> str:
     posts = []
     point = d["tax_point"] or d["date"]
     confirmed = dd.get("confirmed", "document" if not dd.get("lines") else "no")
+    if confirmed == "document" and dd.get("lines"):
+        raise LedgerError(f"{where}: line overrides are your choice, not the document's. Confirm them with the user")
     for w in work:
         line = {"account": w["account"], "amount_is": "net" if w["net"] else "gross",
                 **({"asset": w["asset"]} if w["asset"] else {})}
@@ -3542,7 +3687,7 @@ def doc_txn(book: Book, raw: dict, dd: dict, sug: dict) -> str:
                  "document_date": d["date"]}
     posts.append(Posting(party, -total, book.currency, pmeta))
     meta = entry_meta({"confirmed": confirmed, "classified_by": dd.get("classified_by") or "document",
-                       "document": d["id"]}, where)
+                       "document": d["id"], "user_said": dd.get("user_said")}, where)
     meta.update({"document_kind": d["kind"], "document_number": d.get("number"), "document_date": d["date"].isoformat(),
                  "due_date": d["due_date"].isoformat() if d["due_date"] else None, "source": d.get("source")})
     if d.get("terms"):
@@ -3875,7 +4020,38 @@ def candidates(book: Book, pending: dict, documents: dict | None) -> dict:
         for doc in pool if doc["sign"] < 0 and doc["document"] not in seen
         and min(a for a, _ in spans) <= doc["date"] <= max(b for _, b in spans)]
     return {"rows": out, "pool_size": len(pool), "held_in_review": held, "skipped_documents": skipped,
-            "documents_without_payment": unpaid}
+            "documents_without_payment": unpaid, "sales_without_payment": unpaid_sales(book, documents, spans)}
+
+
+def doc_vat(d: dict) -> Decimal:
+    """The VAT a normalized document charges, from its tax lines, or else from its lines."""
+    taxed = lambda t: t and t.get("regime") in (None, "standard", "import") and t.get("rate")
+    if d["taxes"]:
+        return sum((t["amount"] if t["amount"] is not None else q((t["base"] or 0) * t["rate"] / 100, d["prec"])
+                    for t in d["taxes"] if taxed(t)), Decimal(0))
+    total = Decimal(0)
+    for ln in d["lines"]:
+        t = ln.get("tax")
+        if taxed(t):
+            amt, rate = dec(ln["amount"]), parse_rate(t["rate"])
+            total += q(amt * rate / (100 if ln.get("amount_is") == "net" else 100 + rate), d["prec"])
+    return total
+
+
+def unpaid_sales(book: Book, documents: dict | None, spans: list) -> list[dict]:
+    """Cash books with VAT on the invoice basis owe VAT on a sales invoice before it is paid. The ledger only sees
+    the payment, so the invoices not booked yet are listed (and recorded by `commit`) for the accountant."""
+    if book.basis != "cash" or book.vat_basis_for("sale") != "invoice" or not spans:
+        return []
+    end, booked = max(b for _, b in spans), book.documents_in_ledger()
+    parsed, _ = parse_docs(book, (documents or {}).get("documents"), skip_review=True)
+    sign = lambda d: -1 if d["kind"] == "credit_note" else 1
+    return [{"document": d["id"], "date": d["date"].isoformat(), "number": d.get("number"),
+             "party": clean_text((d["party"] or {}).get("name")) or None,
+             "total": None if d["total"] is None else fmt(sign(d) * d["total"], d["prec"]),
+             "vat": fmt(sign(d) * doc_vat(d), d["prec"]), "currency": d["currency"]}
+            for d in parsed if d["direction"] == "out" and d["kind"] in ("invoice", "credit_note")
+            and d["id"] not in booked and book.fy_from <= d["date"] <= end]
 
 
 # ── Billpal write-back ───────────────────────────────────────────────────────
@@ -4365,7 +4541,7 @@ def build_report(book: Book, start: date, end: date, by: str, lang: str) -> dict
                             "document": p.meta.get("document") or t.meta.get("document")
                             or ", ".join(json.loads(t.meta.get("documents_json") or "[]")),
                             "document_url": t.meta.get("document_url", ""),
-                            "confirmed": t.meta.get("confirmed", "")})
+                            "confirmed": t.meta.get("confirmed", ""), "fx": fx_of(t, p, prec)})
     return {
         "meta": {"title": book.options.get("title", ""), "currency": book.currency, "from": start.isoformat(),
                  "to": end.isoformat(), "basis": book.basis, "lang": lang, "country": book.profile.get("country"),
@@ -4421,6 +4597,35 @@ def tax_form(book: Book, pnl: list) -> dict | None:
     names = TAX_LINE_NAMES.get(form, {})
     return {"form": form, "lines": [{"line": k, "name": names.get(k, ""), "amount": lines[k]} for k in sorted(lines, key=order)],
             "unmapped": unmapped, "not_deductible": nondeductible}
+
+
+def fx_of(t, p, prec: int) -> dict | None:
+    """The original amount of a converted payment, on the postings that carry exactly that amount: not on the
+    VAT or the net line of a gross payment, which no original amount matches."""
+    fx = t.meta.get("fx_json")
+    if not fx:
+        return None
+    fx = json.loads(fx) if isinstance(fx, str) else fx
+    if fx.get("amount") in (None, "") or fx.get("rate") in (None, ""):
+        return None
+    orig = abs(dec(fx["amount"]))
+    if q(orig * dec(fx["rate"]), prec) != abs(p.amount):
+        return None
+    return {"amount": format(orig if p.amount > 0 else -orig, "f"), "currency": fx.get("currency"), "rate": str(fx["rate"])}
+
+
+LOGO_TYPES = {b"\x89PNG": "image/png", b"\xff\xd8\xff": "image/jpeg", b"RIFF": "image/webp"}
+
+
+def logo_uri(path: Path) -> str:
+    """A small image as a data URI, so the report stays one file. SVG is refused: it can carry script."""
+    raw = path.read_bytes()
+    if len(raw) > 300_000:
+        raise LedgerError("logo: at most 300 KB")
+    mime = next((m for sig, m in LOGO_TYPES.items() if raw.startswith(sig)), None)
+    if not mime or (mime == "image/webp" and raw[8:12] != b"WEBP"):
+        raise LedgerError("logo: PNG, JPEG or WebP")
+    return f"data:{mime};base64,{base64.b64encode(raw).decode()}"
 
 
 def own_before(book: Book, account: str, before: date) -> Decimal:
@@ -4895,6 +5100,7 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--delimiter")
     p.add_argument("--decimal")
     p.add_argument("--bom", action=argparse.BooleanOptionalAction, default=None)
+    p.add_argument("--logo", help="PNG, JPEG or WebP shown in the report instead of the Billpal logo")
     p = sub.add_parser("export", help="bookings for the accountant's software: DATEV, BMD, QuickBooks or Xero")
     p.add_argument("ledger")
     p.add_argument("--format", choices=EXPORT_FORMATS, required=True)
@@ -4976,6 +5182,9 @@ def run(args) -> dict:
                  for h in res["held_in_review"] if h["document"] and h["date"]]
         if holds:
             pending["review_holds"] = holds
+        if res["sales_without_payment"]:
+            pending["unpaid_sales"] = res["sales_without_payment"]
+        if holds or res["sales_without_payment"]:
             Path(args.pending).write_text(json.dumps(pending, ensure_ascii=False, indent=1, default=_json_default), encoding="utf-8")
         return res
     if args.cmd in ("commit", "commit-documents"):
@@ -5025,6 +5234,8 @@ def run(args) -> dict:
     if args.cmd == "report":
         lang = args.lang or book.profile.get("language", "en")
         data = build_report(book, start, end, args.by, lang)
+        if args.logo:
+            data["meta"]["logo"] = logo_uri(Path(args.logo))
         formats = {f.strip() for f in args.format.split(",") if f.strip()}
         delimiter = args.delimiter or (";" if lang == "de" else ",")
         decimal = args.decimal or ("," if lang == "de" else ".")

@@ -24,7 +24,7 @@ Unknown fields are rejected. Money is a decimal string (`"1190.00"`), never a JS
 
 - `profile`: also `company` (`true` for a company, including an S corporation; the chart then opens the shareholder account instead of the private accounts), `input_vat_basis` (defaults by country), `vat_extension` (`true` with a DE Dauerfristverlängerung), `business`, `employees`, `tax_advisor`, `notes`.
 - `chart`: a built-in chart from `charts.csv`, or leave it out and give every account under `accounts`. `skip_accounts` drops chart accounts the business does not need.
-- `accounts`: `account` (Beancount path), `name`, `code`, `role`, `personenkonto`, `iban`, `tax_regime`, `tax_rate`, and `tax_jurisdiction` (for tax accounts, for example one sales tax account per US state), `partner` and `share` (a partnership's capital and draw accounts, see `countries.md`), `auto_tax` (the VAT rate DATEV applies on this account by itself, for an Automatikkonto; the SKR charts set it), `tax_line` (the line on the owner's tax form, for example `11` on Schedule C, or `none` for a cost that is not deductible; the QBO chart sets the Schedule C lines), `billpal_account`, `date` (the day it was opened, when after the start of the year).
+- `accounts`: `account` (Beancount path), `name`, `code`, `role`, `personenkonto`, `iban`, `tax_regime`, `tax_rate`, and `tax_jurisdiction` (for tax accounts, for example one sales tax account per US state), `partner` and `share` (a partnership's capital and draw accounts, see `countries.md`), `auto_tax` (the VAT rate DATEV applies on this account by itself, for an Automatikkonto; the SKR charts set it), `tax_line` (the line on the owner's tax form, for example `11` on Schedule C, or `none` for a cost that is not deductible; the QBO chart sets the Schedule C lines), `billpal_account`, `date` (the day it was opened, when after the start of the year), `holds` (on a clearing account that keeps a balance in another currency, its code, for example `USD`).
 - Roles: `bank`, `cash`, `card`, `processor`, `clearing`, `ar`, `ap`, `vat_in`, `vat_out`, `suspense`, `discount_received`, `discount_granted`, `depreciation`, `accumulated_depreciation`, `fixed_asset`, `retained_earnings`, `private` (closed into retained earnings at year end), `shareholder` (carried forward), `opening`, `fx_diff`. A sub-account inherits its parent's role. A tax account matches by role, regime, and rate.
 - `opening`: balanced lines on the first day. Accrual books give each open invoice its own line with `document`, `document_number`, `document_date`, `due_date`, and `party`. `suspense_confirmed` `true` when the user agreed to park a difference. Or `"new_business": true` without opening lines.
 - `previous`: set by `rollover`.
@@ -55,18 +55,19 @@ Unknown fields are rejected. Money is a decimal string (`"1190.00"`), never a JS
  "accept_suggested": true,
  "groups": [{"vendor_key": "text:adobe systems software",
              "lines": [{"account": "Expenses:Software", "tax": {"regime": "reverse_charge", "rate": "20", "source": "user"}}],
-             "confirmed": "user", "document": "billpal:1234"}],
+             "confirmed": "user", "user_said": "ja, Adobe so", "document": "billpal:1234"}],
  "rows": [{"ref": "1:4", "lines": [{"account": "Liabilities:Tax-Office", "amount": "320.00"}, {"account": "Equity:Private"}],
-           "confirmed": "user", "no_document": "Abgabenkonto: VAT and income tax prepayment"}],
+           "confirmed": "user", "user_said": "320 waren die UVA, der Rest ESt",
+           "no_document": "Abgabenkonto: VAT and income tax prepayment"}],
  "accounts": [], "rules": [], "assets": [], "confirmations": []}
 ```
 
 - `groups` decide every row of a vendor group; `rows` (by `ref`, statement number and row number) decide single rows and win over groups.
-- Per decision: `decision` (`book`, or `duplicate` for an ambiguous row that is already booked), `payee`, `narration`, `lines`, `document` or `documents`, `no_document`, `confirmed` (`user`, `rule`, `document`, `no`), `classified_by`, `match`, `document_review` (`open` when the document is still in review), `settles` (`true` when the user says a short payment settles the document, for write-back on cash basis), `meta`.
+- Per decision: `decision` (`book`, or `duplicate` for an ambiguous row that is already booked), `payee`, `narration`, `lines`, `document` or `documents`, `no_document`, `confirmed` (`user`, `rule`, `document`, `no`), `user_said` (required with `user`: the user's own words agreeing to it), `classified_by`, `match`, `document_review` (`open` when the document is still in review), `settles` (`true` when the user says a short payment settles the document, for write-back on cash basis), `meta`.
 - `accept_suggested` books rows a stored rule matched.
 - `review_holds`: documents still in review that the period depends on (`document`, `date`, `note`). Readiness fails up to that date until the document is booked. Holds found by `candidates` are added by `commit` on their own.
 - Lines: `account`, `amount` (one line may leave it out and gets the rest), `amount_is` (`gross` by default, or `net`), `tax`, `deductible` (the share the tax law deducts, see "Tax treatment" in `SKILL.md`), `document`, `allocations` (`[{"document": "billpal:…", "amount": "-1190.00"}]`, signed like the posting; `document` `null` for not yet allocated), `asset`, `description`, `meta`.
-- For documents: `documents` by `id`, with `party_account` or `party_confirmed`, `lines` by `index` (`account`, `tax`, `amount_is`, or `asset` overrides), `confirmed`, `classified_by`, `applies_to`, `review_resolved`, or `decision` `skip`.
+- For documents: `documents` by `id`, with `party_account` or `party_confirmed`, `lines` by `index` (`account`, `tax`, `amount_is`, or `asset` overrides; with overrides, `confirmed` is `user` or `no`), `confirmed`, `user_said`, `classified_by`, `applies_to`, `review_resolved`, or `decision` `skip`.
 
 ## Tax object
 
@@ -105,10 +106,10 @@ Also: `amount` (the tax printed on the document, when it differs from the calcul
 
 ```json
 {"schema": "journal/1",
- "entries": [{"date": "2026-02-28", "payee": "Umbuchung", "narration": "…", "confirmed": "user", "no_document": "transfer",
+ "entries": [{"date": "2026-02-28", "payee": "Umbuchung", "narration": "…", "confirmed": "user", "user_said": "…", "no_document": "transfer",
               "lines": [{"account": "Assets:Transit", "amount": "300.00"}, {"account": "Assets:Cash", "amount": "-300.00"}]}],
  "accounts": [], "rules": [], "allocations": [], "csv_maps": [], "assets": [], "profile": {},
- "confirmations": [{"kind": "booking", "ref": "<txn_id>"}],
+ "confirmations": [{"kind": "booking", "ref": "<txn_id>", "user_said": "…"}],
  "questions": [{"id": "apple-0201", "question": "…", "proposal": "…", "evidence": "…"}]}
 ```
 
@@ -118,20 +119,21 @@ Confirmation kinds: `booking`, `tax`, `document_review`. `ref` is the booking's 
 
 ```json
 {"id": "svs", "text": "Sozialversicherung", "money": "out", "account": "Expenses:SVS",
- "tax": {"regime": "out_of_scope", "source": "rule"}}
+ "tax": {"regime": "out_of_scope", "source": "rule"}, "user_said": "SVS immer so"}
 ```
 
-Also: `iban`, `amount_min`, `amount_max`, `on_account`, `payee`, `priority` (higher wins), `needs_review` (suggest, but leave unconfirmed), `share` (the business part; the rest goes to the private account), `deductible` (the deductible part of a business cost, not together with `share`), `private_account` (when the chart has more than one), `disabled`, `note`. A rule matches on `text` (in the payment text, counterparty, or reference) or `iban`. A rule stored again with the same `id` replaces the old one.
+`user_said` (the user's words agreeing to the rule) is required, except with `needs_review`. Also: `iban`, `amount_min`, `amount_max`, `on_account`, `payee`, `priority` (higher wins), `needs_review` (suggest, but leave unconfirmed), `share` (the business part; the rest goes to the private account), `deductible` (the deductible part of a business cost, not together with `share`), `private_account` (when the chart has more than one), `disabled`, `note`. A rule matches on `text` (in the payment text, counterparty, or reference) or `iban`. A rule stored again with the same `id` replaces the old one.
 
 ## Allocation
 
 ```json
 {"id": "rent", "text": "PMV Immobilien", "money": "out", "account": "Expenses:Rent", "share": "8.5/52",
  "basis": "8.5 m² office of 52 m²", "tax": {"regime": "out_of_scope", "source": "rule"},
- "every": "month", "from": "2026-01-01", "topic": "home_office", "document": "Mietvertrag 2024"}
+ "every": "month", "from": "2026-01-01", "topic": "home_office", "document": "Mietvertrag 2024",
+ "user_said": "das Büro hat 8,5 m²"}
 ```
 
-Also: `iban`, `amount_min`, `amount_max`, `to` (end date, for example after a move), `private_account`, `payee`, `disabled`, `note`. To change a share, store the allocation again with the same `id`; to end it, give `to` or `disabled`. Earlier bookings stay as they are.
+`user_said` is required, as on a rule. Also: `iban`, `amount_min`, `amount_max`, `to` (end date, for example after a move), `private_account`, `payee`, `disabled`, `note`. To change a share, store the allocation again with the same `id`; to end it, give `to` or `disabled`. Earlier bookings stay as they are.
 
 ## CSV map
 

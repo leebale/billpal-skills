@@ -3,128 +3,331 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
 <title>Report</title>
 <style>
-  :root { --fg: #181d27; --muted: #535862; --line: #e9eaeb; --soft: #fafafa; --bad: #b42318; --good: #067647; --warn: #b54708; }
+  /* Billpal tokens and component specs (src/styles/theme.css, src/components), copied in: the report is one file and loads nothing from outside. */
+  :root {
+    --page: rgb(250 250 250); --card: rgb(255 255 255); --soft: rgb(250 250 250); --hover: rgb(250 250 250);
+    --line: rgb(233 234 235); --line-strong: rgb(213 215 218);
+    --fg: rgb(24 29 39); --fg2: rgb(65 70 81); --muted: rgb(113 118 128); --fg-dot: rgb(164 167 174);
+    --brand: rgb(52 93 238); --brand-text: rgb(40 75 210); --tab-line: rgb(52 93 238); --focus: rgb(60 90 240);
+    --neg: rgb(238 52 101);
+    --dot-ok: rgb(100 201 144); --dot-warn: rgb(251 191 50); --dot-bad: rgb(239 62 109);
+    --shadow-xs: 0 1px 2px rgb(10 13 18 / 0.05);
+    --shadow-btn: inset 0 0 0 1px rgb(10 13 18 / 0.18), inset 0 -2px 0 rgb(10 13 18 / 0.05), 0 1px 2px rgb(10 13 18 / 0.05);
+    --font: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  @media screen and (prefers-color-scheme: dark) {
+    :root {
+      --page: rgb(28 28 28); --card: rgb(38 38 38); --soft: rgb(33 33 33); --hover: rgb(44 44 44);
+      --line: rgb(61 61 61); --line-strong: rgb(76 76 76);
+      --fg: rgb(247 247 247); --fg2: rgb(206 207 210); --muted: rgb(148 151 156); --fg-dot: rgb(133 136 142);
+      --brand-text: rgb(206 207 210); --tab-line: rgb(206 207 210);
+      --neg: rgb(241 80 123);
+      --shadow-xs: none; --shadow-btn: none;
+    }
+  }
   * { box-sizing: border-box; }
-  body { margin: 0; font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; color: var(--fg); background: #fff; }
-  main { max-width: 1100px; margin: 0 auto; padding: 32px 24px 64px; }
-  h1 { font-size: 24px; margin: 0 0 4px; }
-  h2 { font-size: 17px; margin: 40px 0 12px; padding-top: 8px; border-top: 1px solid var(--line); }
-  .sub { color: var(--muted); margin: 0 0 16px; }
-  nav { display: flex; flex-wrap: wrap; gap: 8px; margin: 16px 0 8px; }
-  nav a { color: var(--fg); text-decoration: none; border: 1px solid var(--line); border-radius: 8px; padding: 4px 10px; font-size: 13px; }
-  .badges { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
-  .badge { border-radius: 999px; padding: 2px 10px; font-size: 12px; font-weight: 600; border: 1px solid currentColor; }
-  .good { color: var(--good); } .bad { color: var(--bad); } .warn { color: var(--warn); }
-  ul.fails { margin: 8px 0 0; padding-left: 20px; color: var(--bad); }
-  ul.warns { margin: 8px 0 0; padding-left: 20px; color: var(--warn); }
+  body { margin: 0; font: 14px/20px var(--font); color: var(--fg); background: var(--page); -webkit-font-smoothing: antialiased; -webkit-text-size-adjust: 100%; }
+  a, button, summary, input, select { -webkit-tap-highlight-color: transparent; }
+  :focus { outline: none; }
+  :focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+
+  /* Top bar: min-h-18, border-b border-secondary, bg-primary. */
+  .top { background: var(--card); border-bottom: 1px solid var(--line); }
+  .bar { max-width: 1168px; min-height: 72px; margin: 0 auto; padding: 0 24px; display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+  .brand { display: flex; align-items: center; gap: 10px; color: var(--fg); font: 600 22px/1 Poppins, var(--font); letter-spacing: -0.01em; }
+  .brand svg { width: 28px; height: 28px; flex: none; border-radius: 6px; }
+  .brand img { display: block; max-width: 200px; max-height: 40px; }
+  /* Secondary button, size sm. */
+  .btn { display: inline-flex; align-items: center; gap: 4px; font: 600 14px/20px var(--font); color: var(--fg2); background: var(--card); border: 0; border-radius: 8px; padding: 8px 12px; box-shadow: inset 0 0 0 1px var(--line-strong), var(--shadow-btn); cursor: pointer; transition: background .1s linear; }
+  .btn:hover { background: var(--hover); }
+  .btn svg { width: 20px; height: 20px; color: var(--fg-dot); }
+
+  main { max-width: 1168px; margin: 0 auto; padding: 24px 24px 48px; }
+  /* DashboardPageHeading. */
+  .hero { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 12px 16px; }
+  h1 { margin: 0; font-size: 18px; line-height: 28px; font-weight: 600; }
+  .meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 4px 0 0; color: var(--muted); }
+  /* MetaDot: size-1 rounded-full bg-fg-quaternary. */
+  .dot { display: inline-block; flex: none; width: 4px; height: 4px; border-radius: 50%; background: var(--fg-dot); }
+  .badges { display: flex; flex-wrap: wrap; gap: 8px; }
+  /* BadgeWithDot type="modern" size="sm". */
+  .badge { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; border-radius: 6px; padding: 3px 8px 3px 6px; font-size: 12px; line-height: 18px; font-weight: 500; color: var(--fg2); background: var(--card); box-shadow: inset 0 0 0 1px var(--line-strong); }
+  .badge::before { content: ""; width: 6px; height: 6px; margin: 1px; border-radius: 50%; background: var(--dot-ok); }
+  .badge.warn::before { background: var(--dot-warn); }
+  .badge.bad::before { background: var(--dot-bad); }
+
+  .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; margin: 24px 0; }
+  .kpi { display: flex; flex-direction: column; gap: 8px; min-width: 0; background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 20px; box-shadow: var(--shadow-xs); }
+  .kpi span { color: var(--muted); font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .kpi b { margin-top: auto; font-size: 24px; line-height: 32px; font-weight: 600; letter-spacing: -0.01em; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .kpi b.neg { color: var(--neg); }
+  /* Tabs type="underline" size="sm". The inset shadow is the list's 1px line; the active tab's 2px border sits on it. */
+  nav { position: sticky; top: 0; z-index: 5; display: flex; gap: 12px; overflow-x: auto; scrollbar-width: none; margin: 0 0 24px; padding-top: 16px; background: var(--page); box-shadow: inset 0 -1px 0 var(--line); }
+  nav::-webkit-scrollbar { display: none; }
+  nav a { flex: none; padding: 0 4px 10px; border-bottom: 2px solid transparent; color: var(--muted); font-weight: 500; text-decoration: none; white-space: nowrap; transition: color .1s linear, border-color .1s linear; }
+  nav a:hover { color: var(--brand-text); border-color: var(--tab-line); }
+  nav a.on { color: var(--brand-text); border-color: var(--tab-line); font-weight: 600; }
+
+  /* Card: rounded-xl border border-secondary bg-primary; tables run edge to edge. */
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; margin: 0 0 24px; scroll-margin-top: 64px; }
+  .head { padding: 20px 24px; }
+  h2 { margin: 0; font-size: 18px; line-height: 28px; font-weight: 600; }
+  .head p { margin: 2px 0 0; color: var(--muted); }
+  h3 { margin: 0; padding: 20px 24px 12px; font-size: 14px; line-height: 20px; font-weight: 600; }
+  .head + h3 { padding-top: 0; }
+  .points { list-style: none; margin: 0; padding: 0; }
+  .points li { display: flex; gap: 12px; padding: 14px 24px; border-top: 1px solid var(--line); color: var(--fg2); }
+  .points li::before { content: ""; flex: none; width: 6px; height: 6px; margin-top: 7px; border-radius: 50%; background: var(--dot-warn); }
+  .points li.bad::before { background: var(--dot-bad); }
+
   table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
-  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
-  th { font-size: 12px; color: var(--muted); font-weight: 600; background: var(--soft); position: sticky; top: 0; }
-  td.n, th.n { text-align: right; white-space: nowrap; }
-  td:first-child { white-space: nowrap; }
-  tr.total td { font-weight: 600; border-top: 2px solid var(--fg); }
-  .wrap { overflow-x: auto; }
-  .empty { color: var(--muted); font-style: italic; }
-  td a { color: inherit; text-underline-offset: 2px; }
-  .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin: 16px 0; }
-  .kpi { border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; }
-  .kpi b { display: block; font-size: 20px; margin-top: 2px; }
-  .kpi span { color: var(--muted); font-size: 12px; }
-  /* Expandable rows: account, then party, then bookings in a soft panel. Children indent to the parent's label. */
+  th, td { text-align: left; padding: 16px 20px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  th { padding-top: 12px; padding-bottom: 12px; font-size: 12px; line-height: 18px; font-weight: 600; color: var(--muted); background: var(--soft); }
+  td { color: var(--fg2); }
+  th:first-child, td:first-child { padding-left: var(--indent, 24px); }
+  th:last-child, td:last-child { padding-right: 24px; }
+  tbody tr:last-child td { border-bottom: 0; }
+  tbody tr:hover td { background: var(--hover); }
+  th.n, td.n { text-align: right; }
+  td.n { color: var(--fg); font-weight: 500; }
+  td.neg { color: var(--neg); }
+  .fx { display: block; font-size: 12px; line-height: 18px; font-weight: 400; color: var(--muted); }
+  th.sort { cursor: pointer; user-select: none; -webkit-user-select: none; }
+  th.sort:hover { color: var(--fg2); }
+  th.sort::after { content: ""; display: inline-block; width: 12px; height: 12px; margin-left: 4px; vertical-align: -2px; background: center / 12px no-repeat url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 256 256' fill='none' stroke='%23A4A7AE' stroke-width='16' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M80 176l48 48 48-48M80 80l48-48 48 48'/%3E%3C/svg%3E"); }
+  th[aria-sort=ascending]::after { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 256 256' fill='none' stroke='%23A4A7AE' stroke-width='16' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M128 216V40M56 112l72-72 72 72'/%3E%3C/svg%3E"); }
+  th[aria-sort=descending]::after { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 256 256' fill='none' stroke='%23A4A7AE' stroke-width='16' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M128 40v176M56 144l72 72 72-72'/%3E%3C/svg%3E"); }
+  /* Like the app's TruncatingText: one line, ellipsis, full text in the tooltip. */
+  td.w, td.t, td.d { max-width: 240px; overflow: hidden; text-overflow: ellipsis; }
+  td.d { max-width: 160px; }
+  /* The description takes what is left and truncates first, so the amount column never leaves the card. */
+  td.t { max-width: 0; width: 40%; }
+  td.b, .acct { color: var(--fg); font-weight: 500; }
+  .code { color: var(--muted); font-weight: 400; margin-right: 8px; white-space: nowrap; }
+  tr.total td { color: var(--fg); font-weight: 600; background: var(--soft); border-top: 1px solid var(--line); }
+  .result tr.total td { font-size: 16px; line-height: 24px; }
+  .wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .empty { margin: 0; padding: 0 24px 20px; color: var(--muted); }
+  td a { color: var(--brand-text); font-weight: 500; text-decoration: none; }
+  td a:hover { text-decoration: underline; text-underline-offset: 2px; }
+
+  /* Expandable rows: account, then party, then bookings. Each level indents to the label above it. */
   details { border-bottom: 1px solid var(--line); }
-  details[open] { padding-bottom: 12px; }
-  details > details { margin-left: 18px; }
-  details > div { margin-left: 8px; }
-  details details { border-bottom: 0; }
-  details details[open] { padding-bottom: 6px; }
-  summary { cursor: pointer; display: flex; align-items: baseline; gap: 10px; padding: 10px 8px; list-style: none; border-radius: 8px; }
-  details details > summary { padding: 7px 8px; }
+  .card > details:last-child { border-bottom: 0; }
+  .head + details, h3 + details { border-top: 1px solid var(--line); }
+  summary { cursor: pointer; display: flex; align-items: center; gap: 8px; min-height: 52px; padding: 14px 24px; list-style: none; transition: background .1s linear; }
   summary::-webkit-details-marker { display: none; }
-  summary::before { content: ""; flex: none; width: 6px; height: 6px; margin-left: 2px; border: solid var(--muted); border-width: 0 1.5px 1.5px 0; transform: translateY(-2px) rotate(-45deg); transition: transform .15s; }
-  details[open] > summary::before { transform: translateY(-3px) rotate(45deg); }
-  details[open] > summary > span:first-child { font-weight: 600; }
-  summary:hover { background: var(--soft); }
-  summary:focus { outline: none; }
-  summary:focus-visible { outline: 2px solid #84adff; outline-offset: -2px; }
-  details .wrap { background: var(--soft); border-radius: 10px; padding: 2px 12px; margin: 2px 0 6px; }
-  details th { background: transparent; position: static; }
-  details tr:last-child td { border-bottom: 0; }
-  details .empty { margin: 4px 0 8px; font-size: 13px; }
-  summary b { margin-left: auto; font-weight: 600; white-space: nowrap; font-variant-numeric: tabular-nums; }
-  #pnl table { table-layout: fixed; } #pnl th:first-child { width: 72px; } #pnl th:nth-child(2) { width: 34%; }
-  .result { margin-top: 20px; } .result td { font-size: 15px; }
-  summary span.muted { color: var(--muted); font-weight: 400; }
-  .filters { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 12px; }
-  .filters input, .filters select { font: inherit; border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; }
-  .filters input { flex: 1; min-width: 200px; }
-  footer { margin-top: 48px; color: var(--muted); font-size: 12px; }
-  @media print { nav, summary::before { display: none; } details > * { display: block; } h2 { break-before: auto; } th { position: static; } main { padding: 0; } }
+  summary::before { content: ""; flex: none; width: 16px; height: 16px; background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23A4A7AE' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 12 4-4-4-4'/%3E%3C/svg%3E") center / 16px no-repeat; transition: transform .15s ease; }
+  details[open] > summary::before { transform: rotate(90deg); }
+  summary:hover { background: var(--hover); }
+  .lbl { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 6px; min-width: 0; }
+  .lbl > span:first-child { color: var(--fg); font-weight: 500; }
+  .lbl .count { color: var(--muted); }
+  summary b { margin-left: auto; padding-left: 16px; font-weight: 500; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  summary b.neg { color: var(--neg); }
+  details > .wrap { --indent: 48px; border-top: 1px solid var(--line); }
+  details details { border-bottom: 0; border-top: 1px solid var(--line); }
+  details details > summary { padding-left: 48px; }
+  details details > .wrap { --indent: 72px; }
+  details th { background: transparent; }
+  details > .empty { padding: 12px 24px 16px 48px; }
+
+  /* Input and select, size md. */
+  .filters { display: flex; flex-wrap: wrap; gap: 12px; padding: 0 24px 20px; }
+  .filters input, .filters select { font: 400 14px/20px var(--font); color: var(--fg); background-color: var(--card); border: 0; border-radius: 8px; padding: 10px 14px; box-shadow: inset 0 0 0 1px var(--line-strong), var(--shadow-xs); appearance: none; -webkit-appearance: none; }
+  .filters input::placeholder { color: var(--muted); }
+  .filters input:focus, .filters select:focus { outline: none; box-shadow: inset 0 0 0 2px var(--brand), var(--shadow-xs); }
+  .filters input { flex: 1; min-width: 220px; max-width: 400px; padding-left: 40px; background: var(--card) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='none' stroke='%23A4A7AE' stroke-width='1.67' stroke-linecap='round'%3E%3Ccircle cx='9.17' cy='9.17' r='5.83'/%3E%3Cpath d='m17.5 17.5-3.63-3.63'/%3E%3C/svg%3E") 14px center / 20px no-repeat; }
+  .filters input::-webkit-search-decoration { -webkit-appearance: none; }
+  .filters select { padding-right: 40px; cursor: pointer; background: var(--card) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='none' stroke='%23A4A7AE' stroke-width='1.67' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m5 7.5 5 5 5-5'/%3E%3C/svg%3E") right 12px center / 20px no-repeat; }
+  footer { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px 16px; margin-top: 32px; color: var(--muted); font-size: 12px; line-height: 18px; }
+  footer a { color: var(--brand-text); font-weight: 600; text-decoration: none; }
+  .nodata { max-width: 560px; margin: 64px auto; text-align: center; color: var(--fg2); }
+
+  @media (max-width: 640px) {
+    .bar { min-height: 64px; padding: 0 16px; }
+    main { padding: 20px 16px 40px; }
+    .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 20px 0; }
+    .kpi { padding: 16px; gap: 4px; }
+    .kpi b { font-size: 18px; line-height: 28px; }
+    nav { margin: 0 -16px 20px; padding: 12px 16px 0; }
+    .card { margin-bottom: 16px; scroll-margin-top: 56px; }
+    .head { padding: 16px; }
+    h3 { padding: 16px 16px 10px; }
+    .points li { padding: 12px 16px; }
+    th, td { padding: 12px; }
+    th:first-child, td:first-child { padding-left: var(--indent, 16px); }
+    th:last-child, td:last-child { padding-right: 16px; }
+    .kpi:last-child:nth-child(odd) { grid-column: 1 / -1; }
+    /* Rows stay on one line and the table scrolls sideways; only the pinned first column wraps, so it stays narrow. */
+    td.w, td.t, td.d { max-width: none; }
+    td.t { width: auto; }
+    td.w:first-child { white-space: normal; min-width: 120px; max-width: 160px; }
+    .wrap.more { -webkit-mask-image: linear-gradient(to left, transparent, #000 40px); mask-image: linear-gradient(to left, transparent, #000 40px); }
+    .p { display: none; }
+    .wrap th:first-child, .wrap td:first-child { position: sticky; left: 0; z-index: 1; background: var(--cell, var(--card)); }
+    .wrap.scrolled th:first-child, .wrap.scrolled td:first-child { box-shadow: inset -1px 0 0 var(--line); }
+    .wrap th:first-child { background: var(--soft); }
+    details .wrap th:first-child { background: var(--card); }
+    .wrap tr.total td:first-child { background: var(--soft); }
+    .acct { display: inline-block; min-width: 132px; }
+    summary { padding: 12px 16px; }
+    details details > summary { padding-left: 40px; }
+    details > .wrap { --indent: 40px; }
+    details details > .wrap { --indent: 64px; }
+    details > .empty { padding: 12px 16px 16px 40px; }
+    .filters { padding: 0 16px 16px; }
+    .filters { flex-direction: column; }
+    .filters input { min-width: 0; max-width: none; }
+    .empty { padding: 0 16px 16px; }
+  }
+  /* Paper: an A4 review. Screen-only parts go (tabs, search, the partial bookings list: journal.csv has them all),
+     sections become plain headed blocks, and every column wraps instead of truncating. */
+  @media print {
+    @page { size: A4; margin: 14mm 12mm 16mm; }
+    * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    body { background: #fff; font-size: 11px; line-height: 16px; }
+    .top { border: 0; }
+    .bar { min-height: 0; max-width: none; padding: 0 0 16px; }
+    .btn, nav, .filters, #bookings, summary::before, th.sort::after { display: none; }
+    /* Chrome clips the page box at a fractional width: a border on the edge loses its last pixel. */
+    main { max-width: none; padding: 0 2px; }
+    h1 { font-size: 16px; line-height: 24px; }
+    .kpis { grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; margin: 16px 0 24px; }
+    .kpi { box-shadow: none; border-radius: 8px; padding: 10px 12px; gap: 2px; }
+    .kpi b { font-size: 15px; line-height: 22px; }
+    .card { border: 0; border-radius: 0; overflow: visible; margin: 0 0 24px; }
+    .head { padding: 0 0 8px; border-bottom: 1px solid var(--fg); break-after: avoid; }
+    h2 { font-size: 14px; line-height: 20px; }
+    h3 { padding: 14px 0 4px; break-after: avoid; }
+    .head + h3 { padding-top: 12px; }
+    .points li { padding: 6px 0; }
+    .wrap, .wrap.more { overflow: visible; -webkit-mask-image: none; mask-image: none; }
+    th, td { padding: 5px 8px; }
+    th:first-child, td:first-child { padding-left: var(--indent, 0); }
+    th:last-child, td:last-child { padding-right: 0; }
+    th { background: none; border-bottom: 1px solid var(--line-strong); }
+    td.w, td.t, td.d { white-space: normal; max-width: none; overflow: visible; }
+    td.t { width: auto; }
+    tr, summary { break-inside: avoid; }
+    tr.total td { background: none; border-top: 1px solid var(--line-strong); }
+    summary { min-height: 0; padding: 5px 0; }
+    details details > summary { padding-left: 16px; }
+    details > .wrap { --indent: 16px; }
+    details details > .wrap { --indent: 32px; }
+    details > .empty, .empty { padding: 4px 0; }
+    footer { margin-top: 16px; }
+  }
 </style>
 </head>
 <body>
+<header class="top"><div class="bar">
+  <span class="brand"><svg viewBox="0 0 1024 1024" aria-hidden="true"><rect width="1024" height="1024" rx="64" fill="#345DEE"/><path d="M534.503 799H309.664V445.789H534.503C633.703 445.789 714.401 525.001 714.401 622.411C714.401 719.822 633.703 799 534.503 799ZM444.554 663.942H534.503C559.32 663.942 579.477 644.73 579.477 621.095C579.477 597.46 559.286 578.247 534.503 578.247H444.554V663.942Z" fill="#fff" fill-opacity=".6"/><path d="M534.503 578.21H309.664V225H534.503C633.703 225 714.401 304.212 714.401 401.622C714.401 499.033 633.703 578.21 534.503 578.21ZM444.554 445.786H534.503C559.32 445.786 579.477 426.574 579.477 402.939C579.477 379.304 559.286 360.092 534.503 360.092H444.554V445.786Z" fill="#fff"/><path d="M534.471 578.214C590.926 578.214 640.763 552.046 673.784 512.002C640.796 471.957 590.96 445.789 534.471 445.789H444.523H309.599V663.87C326.476 610.398 372.601 578.214 444.523 578.247L534.471 578.214Z" fill="#fff"/></svg>billpal</span>
+  <button class="btn" id="print" type="button" hidden><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.67" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 7.5V2.5h10v5M5 15H3.33a1.67 1.67 0 0 1-1.66-1.67V9.17A1.67 1.67 0 0 1 3.33 7.5h13.34a1.67 1.67 0 0 1 1.66 1.67v4.16A1.67 1.67 0 0 1 16.67 15H15M5 11.67h10v5.83H5z"/></svg><span></span></button>
+</div></header>
 <main id="app"></main>
 <script type="application/json" id="report-data">__REPORT_DATA__</script>
 <script>
 (function () {
   "use strict";
-  var data = JSON.parse(document.getElementById("report-data").textContent);
+  var app = document.getElementById("app");
+  var data;
+  try { data = JSON.parse(document.getElementById("report-data").textContent); } catch (e) { data = null; }
+  if (!data || !data.meta) {
+    var deUi = /^de/i.test(navigator.language || "");
+    var p = document.createElement("p");
+    p.className = "nodata";
+    p.textContent = deUi
+      ? "Diese Datei enthält keine Berichtsdaten. Erstelle den Bericht mit ledger.py report und öffne die report.html, die dabei entsteht."
+      : "This file has no report data. Create the report with ledger.py report, then open the report.html it writes.";
+    app.appendChild(p);
+    return;
+  }
   var m = data.meta;
   var de = m.lang === "de";
+  document.documentElement.lang = de ? "de" : "en";
   var L = de ? {
-    title: "Buchhaltung", period: "Zeitraum", ready: "Bereit für die Steuerberatung", notReady: "Noch nicht fertig",
+    title: "Buchhaltung", period: "Zeitraum", ready: "Bereit zur Übergabe", notReady: "Noch nicht fertig",
+    desc: { drill: "Öffne ein Konto, um seine Partner und Buchungen zu sehen", bs: "Stand am ",
+      items: "Rechnungen, die am {d} noch offen sind", assets: "Anschaffung und AfA je Anlage",
+      missing: "Buchungen, für die noch ein Beleg fehlt", tb: "Jedes Konto vom Anfangs- bis zum Endsaldo",
+      open: "Kläre diese Punkte vor der Übergabe" },
+    original: "Originalbetrag, Kurs ",
     reconciled: "Summen stimmen", notReconciled: "Summen stimmen nicht", pnl: "Gewinn und Verlust",
     pnlCash: "Einnahmen und Ausgaben", bs: "Bilanz", bsCash: "Kontensalden", vat: "Umsatzsteuer", items: "Offene Posten",
-    assets: "Anlagenverzeichnis", missing: "Buchungen ohne Beleg", tb: "Summen- und Saldenliste", account: "Konto",
+    assets: "Anlagenverzeichnis", missing: "Buchungen ohne Beleg", missingShort: "Ohne Beleg", tb: "Summen- und Saldenliste", account: "Konto",
     code: "Nr.", name: "Bezeichnung", total: "Summe", result: "Ergebnis", income: "Erträge", expenses: "Aufwendungen", incomeCash: "Einnahmen", expensesCash: "Ausgaben",
     assetsSide: "Aktiva", liabilities: "Verbindlichkeiten", equity: "Eigenkapital", opening: "Anfang", debit: "Soll",
     credit: "Haben", closing: "Ende", direction: "Richtung", sale: "Umsatz", purchase: "Einkauf", regime: "Behandlung",
     rate: "Satz", base: "Bemessung", tax: "USt", inputTax: "Vorsteuer", payable: "Zahllast", codes: "Kennzahlen",
     party: "Partner", number: "Nummer", date: "Datum", due: "Fällig", amount: "Betrag", open: "Offen", overdue: "Tage überfällig",
     receivable: "Forderung", payableSide: "Verbindlichkeit", cost: "Anschaffung", prior: "AfA bisher", thisYear: "AfA dieses Jahr",
-    booked: "Gebucht", count: "Anzahl", vatBookings: "Buchungen je Zeitraum", bookValue: "Buchwert Ende", none: "Keine Einträge", booking: "Buchung", notFiling: "Zusammenfassung, keine Steuererklärung.",
+    booked: "Gebucht", count: "Anzahl", vatBookings: "Buchungen je Zeitraum", bookValue: "Buchwert Ende", none: "Keine Einträge", booking: "Buchung", notFiling: "Zusammenfassung, keine Steuererklärung",
     source: "Erstellt aus", resultYear: "Ergebnis des Geschäftsjahres", taxes: "Steuern", taxType: "Steuer",
     taxGeneric: "Steuer", types: { vat: "USt", gst: "GST", sales_tax: "Sales Tax", other: "Andere" },
     drill: "Konten im Detail", bookings: "Buchungen", bookingOne: "Buchung", noParty: "Ohne Partner", text: "Text", document: "Beleg", byParty: "Nach Partner",
     firstBookings: "Einzelne Buchungen", jurisdiction: "Steuergebiet", useTax: "Use Tax",
     regimes: { standard: "Normal", reverse_charge: "Reverse Charge", intra_community: "Innergemeinschaftlich",
       exempt: "Steuerfrei", zero: "Nullsatz", export: "Ausfuhr", out_of_scope: "Nicht steuerbar", import: "Einfuhr" },
-    search: "Buchungen", searchHint: "Suchen: Partner, Text, Betrag, Konto", allAccounts: "Alle Konten",
+    search: "Buchungen", searchHint: "Partner, Text, Betrag, Konto", allAccounts: "Alle Konten",
     shown: function (n, all) { return n + " von " + all + " Buchungszeilen"; },
     more: function (n) { return "und " + n + " weitere, in journal.csv oder über die Suche"; },
-    taxForm: "Steuerformular (Entwurf)", draft: "Entwurf für die Steuerberatung, keine Steuererklärung.",
+    taxForm: "Steuerformular (Entwurf)", draft: "Entwurf für die Steuerberatung, keine Steuererklärung",
     line: m.country === "AT" ? "Kennzahl" : "Zeile", unmapped: "Konten ohne Zeile, die ordnet die Steuerberatung zu",
-    notDeductible: "Nicht abzugsfähig"
+    notDeductible: "Nicht abzugsfähig",
+    print: "Drucken", sections: "Berichtsbereiche", openPoints: "Was noch offen ist",
+    vatDue: "USt-Zahllast", vatBack: "USt-Guthaben", taxDue: "Steuerschuld", taxBack: "Steuerguthaben",
+    allConfirmed: "Alle Buchungen", unconfirmedOnly: "Nur unbestätigte",
+    madeWith: "Erstellt mit Billpal", home: "https://billpal.io/de/skills/ai-bookkeeping"
   } : {
-    title: "Books", period: "Period", ready: "Ready for your accountant", notReady: "Not ready yet",
+    title: "Books", period: "Period", ready: "Ready to hand over", notReady: "Not ready yet",
+    desc: { drill: "Open an account to see its parties and bookings", bs: "Balances on ",
+      items: "Invoices still open on {d}", assets: "Cost and depreciation per asset",
+      missing: "Bookings that still need a receipt", tb: "Every account from opening to closing balance",
+      open: "Clear these before you hand the books over" },
+    original: "Original amount, rate ",
     reconciled: "Totals reconcile", notReconciled: "Totals do not reconcile", pnl: "Profit and loss",
     pnlCash: "Income and expenses", bs: "Balance sheet", bsCash: "Account balances", vat: "VAT", items: "Open items",
-    assets: "Asset register", missing: "Bookings without a receipt", tb: "Trial balance", account: "Account",
+    assets: "Asset register", missing: "Bookings without a receipt", missingShort: "No receipt", tb: "Trial balance", account: "Account",
     code: "Code", name: "Name", total: "Total", result: "Result", income: "Income", expenses: "Expenses", incomeCash: "Income", expensesCash: "Expenses",
     assetsSide: "Assets", liabilities: "Liabilities", equity: "Equity", opening: "Opening", debit: "Debit",
     credit: "Credit", closing: "Closing", direction: "Direction", sale: "Sales", purchase: "Purchases", regime: "Treatment",
     rate: "Rate", base: "Base", tax: "Output tax", inputTax: "Input tax", payable: "Payable", codes: "Report codes",
     party: "Party", number: "Number", date: "Date", due: "Due", amount: "Amount", open: "Open", overdue: "Days overdue",
     receivable: "Receivable", payableSide: "Payable", cost: "Cost", prior: "Depreciated before", thisYear: "This year",
-    booked: "Booked", count: "Count", vatBookings: "Bookings by period", bookValue: "Book value at end", none: "Nothing here", booking: "Booking", notFiling: "A summary, not a filing.",
+    booked: "Booked", count: "Count", vatBookings: "Bookings by period", bookValue: "Book value at end", none: "Nothing here", booking: "Booking", notFiling: "A summary, not a filing",
     source: "Built from", resultYear: "Result for the fiscal year", taxes: "Taxes", taxType: "Tax",
     taxGeneric: "Tax collected", types: { vat: "VAT", gst: "GST", sales_tax: "Sales tax", other: "Other" },
     drill: "Accounts in detail", bookings: "bookings", bookingOne: "booking", noParty: "No party", text: "Description", document: "Document", byParty: "By party",
     firstBookings: "Single bookings", jurisdiction: "Jurisdiction", useTax: "Use tax",
     regimes: { standard: "Standard", reverse_charge: "Reverse charge", intra_community: "Intra-EU", exempt: "Exempt",
       zero: "Zero-rated", export: "Export", out_of_scope: "Out of scope", import: "Import" },
-    search: "Bookings", searchHint: "Search: party, text, amount, account", allAccounts: "All accounts",
+    search: "Bookings", searchHint: "Party, text, amount, account", allAccounts: "All accounts",
     shown: function (n, all) { return n + " of " + all + " booking lines"; },
     more: function (n) { return "and " + n + " more, in journal.csv or through the search"; },
-    taxForm: "Tax form (draft)", draft: "A draft for your accountant, not a filing.",
-    line: "Line", unmapped: "Accounts without a line, your accountant assigns them", notDeductible: "Not deductible"
+    taxForm: "Tax form (draft)", draft: "A draft for your accountant, not a filing",
+    line: "Line", unmapped: "Accounts without a line, your accountant assigns them", notDeductible: "Not deductible",
+    print: "Print", sections: "Report sections", openPoints: "What is still open",
+    vatDue: "VAT payable", vatBack: "VAT refund", taxDue: "Tax payable", taxBack: "Tax refund",
+    allConfirmed: "All bookings", unconfirmedOnly: "Unconfirmed only",
+    madeWith: "Made with Billpal", home: "https://billpal.io/skills/ai-bookkeeping"
   };
   // de-AT groups thousands with a space; Austrian accountants write 1.234,56 like German ones.
   var locale = de ? "de-DE" : "en-GB";
   var digits = typeof m.precision === "number" ? m.precision : 2;
   var nf = new Intl.NumberFormat(locale, { minimumFractionDigits: digits, maximumFractionDigits: digits });
-  function day(d) { return de && /^\d{4}-\d{2}-\d{2}$/.test(d || "") ? d.slice(8, 10) + "." + d.slice(5, 7) + "." + d.slice(0, 4) : d || ""; }
+  var MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  var isoOf = {};
+  // isoOf maps a shown date back to its ISO form, so date columns sort by date.
+  function day(d) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(d || "")) return d || "";
+    var s = de ? d.slice(8, 10) + "." + d.slice(5, 7) + "." + d.slice(0, 4) : Number(d.slice(8, 10)) + " " + MON[Number(d.slice(5, 7)) - 1] + " " + d.slice(0, 4);
+    isoOf[s] = d;
+    return s;
+  }
   var pct = de ? " %" : "%";
   var acctNames = {};
   data.trial_balance.forEach(function (r) { acctNames[r.account] = [r.code, r.name].filter(Boolean).join(" "); });
@@ -140,27 +343,91 @@
     if (text !== undefined && text !== null) e.textContent = String(text);
     return e;
   }
-  // numeric[i]: true formats an amount, "right" only right-aligns the cell.
-  function table(head, rows, numeric, totalRow) {
+  // An amount as text, red when negative (like the app's amount cells).
+  function amount(tag, v) { return el(tag, Number(v) < 0 ? { class: "neg" } : null, num(v)); }
+  // Code and name in one cell, so the first column can stay in place while a wide table scrolls.
+  function acct(code, name) {
+    var s = el("span", { class: "acct" });
+    if (code) s.appendChild(el("span", { class: "code" }, code));
+    s.appendChild(document.createTextNode(name || ""));
+    return s;
+  }
+  // Columns that truncate on a wide screen and wrap on a phone, by header: names and parties ("w", medium weight with "b"),
+  // descriptions ("t"), document ids ("d"). Every other column stays on one line.
+  var COL = {};
+  COL[L.party] = "w b"; COL[L.name] = "w b"; COL[L.account] = "w"; COL[L.text] = "t"; COL[L.document] = "d";
+  // A booking's amount with its original currency below, when it was converted.
+  function withFx(v, fx) {
+    if (!fx || !fx.currency) return v;
+    return { v: v, sub: num((Number(v) < 0 ? -1 : 1) * Math.abs(Number(fx.amount))) + " " + fx.currency, title: L.original + (fx.rate || "") };
+  }
+  function cellValue(c) { return c && typeof c === "object" && !(c instanceof Node) ? c.v : c; }
+  function sortKey(c, numeric) {
+    var v = cellValue(c);
+    if (numeric === true) return Number(v) || 0;
+    if (numeric === "right") return parseFloat(v) || 0;
+    if (c instanceof Node) return c.textContent;
+    return isoOf[v] || (v == null ? "" : String(v));
+  }
+  function compare(a, b) { return typeof a === "number" ? a - b : a.localeCompare(b, locale, { numeric: true }); }
+  // numeric[i]: true formats an amount, "right" only right-aligns the cell. cls[i]: extra class for column i.
+  // Headers sort on click; the total row stays last. `sort` ({ i, dir, on }) keeps the order across redraws,
+  // and with `on` the caller sorts (the bookings search sorts every hit, not only the ones shown).
+  function table(head, rows, numeric, totalRow, cls, sort) {
     var wrap = el("div", { class: "wrap" });
     if (!rows.length) { wrap.appendChild(el("p", { class: "empty" }, L.none)); return wrap; }
-    var t = el("table"), thead = el("thead"), tr = el("tr");
-    head.forEach(function (h, i) { tr.appendChild(el("th", numeric[i] ? { class: "n" } : null, h)); });
-    thead.appendChild(tr); t.appendChild(thead);
-    var tb = el("tbody");
+    function klass(i, c) {
+      var v = cellValue(c);
+      return [numeric[i] ? "n" : COL[head[i]] || "", numeric[i] === true && Number(v) < 0 ? "neg" : "", cls && cls[i] || ""].join(" ").trim() || null;
+    }
+    var t = el("table"), thead = el("thead"), tr = el("tr"), tb = el("tbody"), body = [], totalTr = null;
+    sort = sort || {};
     rows.concat(totalRow ? [totalRow] : []).forEach(function (r, ri) {
       var row = el("tr", totalRow && ri === rows.length ? { class: "total" } : null);
       r.forEach(function (c, i) {
-        if (c instanceof Node) { var td = el("td"); td.appendChild(c); row.appendChild(td); return; }
-        row.appendChild(el("td", numeric[i] ? { class: "n" } : null, numeric[i] === true ? num(c) : c));
+        var k = klass(i, c), td = el("td", k ? { class: k } : null), v = cellValue(c);
+        if (c instanceof Node) td.appendChild(c); else td.textContent = numeric[i] === true ? num(v) : v == null ? "" : String(v);
+        if (/\b[wtd]\b/.test(k || "") && td.textContent) td.title = td.textContent;
+        if (c && typeof c === "object" && c.sub) td.appendChild(el("span", { class: "fx", title: c.title }, c.sub));
+        row.appendChild(td);
       });
       tb.appendChild(row);
+      if (ri < rows.length) body.push({ tr: row, keys: r.map(function (c, i) { return sortKey(c, numeric[i]); }) });
+      else totalTr = row;
     });
+    function order() {
+      if (sort.i == null || sort.on) return;
+      body.slice().sort(function (a, b) { return compare(a.keys[sort.i], b.keys[sort.i]) * sort.dir; })
+        .forEach(function (x) { tb.insertBefore(x.tr, totalTr); });
+    }
+    head.forEach(function (h, i) {
+      var k = klass(i), th = el("th", k ? { class: k } : null, h);
+      if (h && rows.length > 1) {
+        th.className = ((k || "") + " sort").trim(); th.tabIndex = 0;
+        th.setAttribute("aria-sort", sort.i === i ? (sort.dir > 0 ? "ascending" : "descending") : "none");
+        var go = function () {
+          sort.dir = sort.i === i ? -sort.dir : numeric[i] ? -1 : 1; sort.i = i;
+          Array.prototype.forEach.call(tr.children, function (x) { if (x.classList.contains("sort")) x.setAttribute("aria-sort", "none"); });
+          th.setAttribute("aria-sort", sort.dir > 0 ? "ascending" : "descending");
+          if (sort.on) sort.on(); else order();
+        };
+        th.addEventListener("click", go);
+        th.addEventListener("keydown", function (e) { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); go(); } });
+      }
+      tr.appendChild(th);
+    });
+    order();
+    thead.appendChild(tr); t.appendChild(thead);
     t.appendChild(tb); wrap.appendChild(t); return wrap;
   }
-  function section(id, title) {
-    var s = el("section", { id: id }); s.appendChild(el("h2", null, title)); app.appendChild(s);
-    nav.appendChild(el("a", { href: "#" + id }, title));
+  var nav = el("nav", { "aria-label": L.sections }), sectionList = [];
+  function section(id, title, desc, tab) {
+    var s = el("section", { id: id, class: "card" }), head = el("div", { class: "head" });
+    head.appendChild(el("h2", null, title));
+    if (desc !== undefined) head.appendChild(el("p", null, desc));
+    s.appendChild(head); app.appendChild(s);
+    nav.appendChild(el("a", { href: "#" + id }, tab || title));
+    sectionList.push(s);
     return s;
   }
   function plain(line) { return String(line).replace(/^[a-z0-9_]+: /, ""); }
@@ -174,12 +441,19 @@
   }
   var LIMIT = 200, SHOWN = 50;
   function lines(rows, sign, amountLabel) {
-    var box = el("div");
+    var box = document.createDocumentFragment();
     box.appendChild(table([L.date, L.party, L.text, L.document, amountLabel || L.amount], rows.slice(0, LIMIT).map(function (j) {
-      return [day(j.date), j.payee, j.narration, docCell(j.document, j.document_url), sign * Number(j.amount)];
+      return [day(j.date), j.payee, j.narration, docCell(j.document, j.document_url), withFx(sign * Number(j.amount), j.fx)];
     }), [false, false, false, false, true]));
     if (rows.length > LIMIT) box.appendChild(el("p", { class: "empty" }, L.more(rows.length - LIMIT)));
     return box;
+  }
+  function summary(label, total, count) {
+    var sm = el("summary"), lbl = el("span", { class: "lbl" });
+    lbl.appendChild(el("span", null, label));
+    if (count) { lbl.appendChild(el("span", { class: "dot", "aria-hidden": "true" })); lbl.appendChild(el("span", { class: "count" }, count)); }
+    sm.appendChild(lbl); sm.appendChild(amount("b", total));
+    return sm;
   }
   // One row per party, then that party's bookings. Postings of one booking on the same account add up to one line.
   function byParty(rows, sign) {
@@ -188,27 +462,27 @@
       var name = j.payee || L.noParty, p = parties[name];
       if (!p) { p = parties[name] = { name: name, total: 0, txns: {}, keys: [] }; list.push(p); }
       var key = j.txn_id || j.date + "|" + j.narration;
-      if (!p.txns[key]) { p.txns[key] = { date: j.date, text: j.narration, document: j.document, url: j.document_url, amount: 0 }; p.keys.push(key); }
+      if (!p.txns[key]) { p.txns[key] = { date: j.date, text: j.narration, document: j.document, url: j.document_url, fx: j.fx, amount: 0 }; p.keys.push(key); }
       p.txns[key].amount += sign * Number(j.amount); p.total += sign * Number(j.amount);
     });
     return list.sort(function (a, b) { return Math.abs(b.total) - Math.abs(a.total); }).map(function (p) {
-      var d = el("details"), sm = el("summary"), label = el("span", null, p.name);
-      label.appendChild(el("span", { class: "muted" }, " · " + p.keys.length + " " + (p.keys.length === 1 ? L.bookingOne : L.bookings)));
-      sm.appendChild(label); sm.appendChild(el("b", null, num(p.total))); d.appendChild(sm);
+      var d = el("details");
+      d.appendChild(summary(p.name, p.total, p.keys.length + " " + (p.keys.length === 1 ? L.bookingOne : L.bookings)));
       d.appendChild(table([L.date, L.text, L.document, L.amount], p.keys.slice(0, LIMIT).map(function (k) {
-        var t = p.txns[k]; return [day(t.date), t.text, docCell(t.document, t.url), t.amount];
+        var t = p.txns[k]; return [day(t.date), t.text, docCell(t.document, t.url), withFx(t.amount, t.fx)];
       }), [false, false, false, true]));
       if (p.keys.length > LIMIT) d.appendChild(el("p", { class: "empty" }, L.more(p.keys.length - LIMIT)));
       return d;
     });
   }
   // Built on first open, so a large ledger renders fast. `flat` (true, or a label for the amount column) lists bookings without the party level.
-  function drill(label, amount, rows, sign, flat) {
-    var d = el("details"), sm = el("summary");
-    sm.appendChild(el("span", null, label)); sm.appendChild(el("b", null, num(amount))); d.appendChild(sm);
+  function drill(label, total, rows, sign, flat, meta) {
+    var d = el("details");
+    d.appendChild(summary(label, total, meta));
     d.addEventListener("toggle", function once() {
       if (!d.open || d.childNodes.length > 1) return;
-      if (flat) d.appendChild(lines(rows, sign, flat === true ? null : flat));
+      if (!rows.length) d.appendChild(el("p", { class: "empty" }, L.none));
+      else if (flat) d.appendChild(lines(rows, sign, flat === true ? null : flat));
       else byParty(rows, sign).forEach(function (c) { d.appendChild(c); });
     });
     return d;
@@ -216,39 +490,60 @@
   var byAcct = {};
   data.journal.forEach(function (j) { (byAcct[j.account] = byAcct[j.account] || []).push(j); });
 
-  var app = document.getElementById("app");
   var cash = m.basis === "cash";
   if (cash) { L.income = L.incomeCash; L.expenses = L.expensesCash; }
   document.title = (m.title || L.title) + " " + day(m.from) + " – " + day(m.to);
-  app.appendChild(el("h1", null, m.title || L.title));
-  app.appendChild(el("p", { class: "sub" }, L.period + ": " + day(m.from) + " – " + day(m.to) + " · " + m.currency));
+  var printBtn = document.getElementById("print");
+  printBtn.querySelector("span").textContent = L.print; printBtn.hidden = false;
+  printBtn.addEventListener("click", function () { window.print(); });
+
+  var hero = el("div", { class: "hero" }), head = el("div"), meta = el("p", { class: "meta" });
+  head.appendChild(el("h1", null, m.title || L.title));
+  meta.appendChild(el("span", null, day(m.from) + " – " + day(m.to)));
+  meta.appendChild(el("span", { class: "dot", "aria-hidden": "true" }));
+  meta.appendChild(el("span", null, m.currency));
+  head.appendChild(meta);
+  // A logo from `report --logo` replaces the Billpal mark; it is a data URI, so the file still loads nothing.
+  if (/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+\/=]+$/.test(m.logo || "")) {
+    var brand = document.querySelector(".brand");
+    brand.replaceChildren(el("img", { src: m.logo, alt: m.title || L.title }));
+  }
   var badges = el("div", { class: "badges" });
-  badges.appendChild(el("span", { class: "badge " + (m.ready ? "good" : "bad") }, m.ready ? L.ready : L.notReady));
-  badges.appendChild(el("span", { class: "badge " + (m.reconciled ? "good" : "bad") }, m.reconciled ? L.reconciled : L.notReconciled));
-  if (m.missing_receipts_count) badges.appendChild(el("span", { class: "badge warn" }, L.missing + ": " + m.missing_receipts_count));
-  app.appendChild(badges);
-  if (m.fails && m.fails.length) {
-    var ul = el("ul", { class: "fails" });
-    m.fails.forEach(function (f) { ul.appendChild(el("li", null, plain(f))); });
-    app.appendChild(ul);
-  }
-  if (m.warnings && m.warnings.length) {
-    var wl = el("ul", { class: "warns" });
-    m.warnings.forEach(function (w) { wl.appendChild(el("li", null, plain(w))); });
-    app.appendChild(wl);
-  }
-  var nav = el("nav");
-  app.appendChild(nav);
+  badges.appendChild(el("span", { class: "badge" + (m.ready ? "" : " warn") }, m.ready ? L.ready : L.notReady));
+  badges.appendChild(el("span", { class: "badge" + (m.reconciled ? "" : " bad") }, m.reconciled ? L.reconciled : L.notReconciled));
+  hero.appendChild(head); hero.appendChild(badges);
+  app.appendChild(hero);
 
   var income = data.pnl.filter(function (r) { return r.group === "Income"; });
   var expenses = data.pnl.filter(function (r) { return r.group === "Expenses"; });
   var kpis = el("div", { class: "kpis" });
-  [[L.income, sum(income, function (r) { return r.total; })], [L.expenses, -sum(expenses, function (r) { return r.total; })],
-   [L.result, Number(m.result)]].forEach(function (k) {
-    var box = el("div", { class: "kpi" }); box.appendChild(el("span", null, k[0])); box.appendChild(el("b", null, num(k[1])));
+  var cards = [[L.income, sum(income, function (r) { return r.total; })], [L.expenses, -sum(expenses, function (r) { return r.total; })],
+    [L.result, Number(m.result)]];
+  if (data.vat.totals.length && (vatOnly || salesOnly)) {
+    var due = sum(data.vat.totals, function (r) { return r.payable; });
+    cards.push([due < 0 ? (vatOnly ? L.vatBack : L.taxBack) : (vatOnly ? L.vatDue : L.taxDue), Math.abs(due)]);
+  }
+  cards.forEach(function (k) {
+    var box = el("div", { class: "kpi" });
+    var b = amount("b", k[1]);
+    box.appendChild(el("span", null, k[0])); box.appendChild(b);
     kpis.appendChild(box);
   });
+  var missingBox = el("div", { class: "kpi" });
+  missingBox.appendChild(el("span", null, L.missingShort)); missingBox.appendChild(el("b", null, String(m.missing_receipts_count || 0)));
+  kpis.appendChild(missingBox);
   app.appendChild(kpis);
+
+  if ((m.fails && m.fails.length) || (m.warnings && m.warnings.length)) {
+    var openCard = el("div", { class: "card" }), openHead = el("div", { class: "head" }), ul = el("ul", { class: "points" });
+    openHead.appendChild(el("h2", null, L.openPoints)); openHead.appendChild(el("p", null, L.desc.open));
+    openCard.appendChild(openHead);
+    (m.fails || []).forEach(function (f) { ul.appendChild(el("li", { class: "bad" }, plain(f))); });
+    (m.warnings || []).forEach(function (w) { ul.appendChild(el("li", null, plain(w))); });
+    openCard.appendChild(ul);
+    app.appendChild(openCard);
+  }
+  app.appendChild(nav);
 
   var cols = m.columns, quarters = [];
   if (cols.length === 1) {
@@ -264,22 +559,25 @@
       return -sum((byAcct[r.account] || []).filter(function (j) { return periodOf(j.date, "quarter") === qk; }), function (j) { return j.amount; });
     });
   }
-  var s = section("pnl", cash ? L.pnlCash : L.pnl);
+  // On a phone the period columns are hidden (class "p"): account and total fit without scrolling.
+  var s = section("pnl", cash ? L.pnlCash : L.pnl, de ? L.income + " und " + L.expenses + " je Konto" : L.income + " and " + L.expenses.toLowerCase() + " per account");
   [[L.income, income, 1], [L.expenses, expenses, -1]].forEach(function (g) {
     s.appendChild(el("h3", null, g[0]));
+    var periods = cols.length > 1 ? cols : [];
     var rows = g[1].map(function (r) {
-      return [r.code, r.name].concat(values(r).map(function (v) { return g[2] * Number(v); })).concat([g[2] * Number(r.total)]);
+      var v = periods.length ? values(r).map(function (x) { return g[2] * Number(x); }) : [];
+      return [acct(r.code, r.name)].concat(v).concat([g[2] * Number(r.total)]);
     });
-    var head = [L.code, L.name].concat(cols.length > 1 ? cols : []).concat([L.total]);
-    var numeric = [false, false].concat(cols.length > 1 ? cols.map(function () { return true; }) : []).concat([true]);
-    if (cols.length === 1) rows = rows.map(function (r) { return [r[0], r[1], r[r.length - 1]]; });
-    var tot = [L.total, ""].concat(numeric.slice(2).map(function (_, i) { return sum(rows, function (r) { return r[i + 2]; }); }));
-    s.appendChild(table(head, rows, numeric, tot));
+    var head = [L.account].concat(periods).concat([L.total]);
+    var numeric = [false].concat(periods.map(function () { return true; })).concat([true]);
+    var cls = [""].concat(periods.map(function () { return "p"; })).concat([""]);
+    var tot = [L.total].concat(numeric.slice(1).map(function (_, i) { return sum(rows, function (r) { return r[i + 1]; }); }));
+    s.appendChild(table(head, rows, numeric, tot, cls));
   });
 
   if (data.pnl.length) {
     // One row per booking under each account, with only that account's postings: the bank leg never adds in.
-    s = section("drill", L.drill);
+    s = section("drill", L.drill, L.desc.drill);
     [[L.income, income], [L.expenses, expenses]].forEach(function (g) {
       if (!g[1].length) return;
       s.appendChild(el("h3", null, g[0]));
@@ -290,12 +588,13 @@
     });
   }
 
-  function totalLine(label, amount, cls) {
-    var wrap = el("div", { class: "wrap" + (cls ? " " + cls : "") }), t = el("table"), tr = el("tr", { class: "total" });
-    tr.appendChild(el("td", null, label)); tr.appendChild(el("td", { class: "n" }, num(amount)));
-    t.appendChild(tr); wrap.appendChild(t); return wrap;
+  function totalLine(label, total, cls) {
+    var wrap = el("div", { class: "wrap" + (cls ? " " + cls : "") }), t = el("table"), tb = el("tbody"), tr = el("tr", { class: "total" });
+    tr.appendChild(el("td", null, label));
+    var td = amount("td", total); td.className = ("n " + td.className).trim(); tr.appendChild(td);
+    tb.appendChild(tr); t.appendChild(tb); wrap.appendChild(t); return wrap;
   }
-  s = section("bs", cash ? L.bsCash : L.bs);
+  s = section("bs", cash ? L.bsCash : L.bs, L.desc.bs + day(m.to));
   var bs = data.balance_sheet;
   [[L.assetsSide, bs.assets, bs.assets_total], [L.liabilities, bs.liabilities, bs.liabilities_total],
    [L.equity, bs.equity, bs.equity_total]].forEach(function (g) {
@@ -318,8 +617,7 @@
     return oneType ? c.slice(0, 1).concat(c.slice(2)) : c;
   }
   if (data.vat.lines.length || data.vat.totals.length) {
-    s = section("vat", vatTitle);
-    s.appendChild(el("p", { class: "sub" }, L.notFiling));
+    s = section("vat", vatTitle, L.notFiling);
     s.appendChild(table(jur([L.period, L.taxType, L.direction, L.regime, L.rate, L.base, vatOnly ? L.tax : L.taxGeneric, L.inputTax], { jurisdiction: L.jurisdiction }),
       data.vat.lines.map(function (r) { return jur([r.period, typeName(r.type), r.direction === "sale" ? L.sale : L.purchase, regimeName(r), r.rate + pct, r.base, r.tax, r.input_tax], r); }),
       jur([false, false, false, false, "right", true, true, true], { jurisdiction: false })));
@@ -332,7 +630,8 @@
     var taxed = data.journal.filter(function (j) { return j.tax_regime && !j.tax_part; });
     var perPeriod = data.vat.totals.map(function (r) {
       var rows = taxed.filter(function (j) { return j.tax_type === r.type && periodOf(j.tax_point || j.date, data.vat.period) === r.period; });
-      return rows.length ? drill(r.period + (oneType ? "" : " · " + typeName(r.type)) + (r.jurisdiction ? " " + r.jurisdiction : ""), r.payable, rows, -1, L.base) : null;
+      var meta = [oneType ? "" : typeName(r.type), r.jurisdiction || ""].filter(Boolean).join(" ");
+      return rows.length ? drill(r.period, r.payable, rows, -1, L.base, meta) : null;
     }).filter(Boolean);
     if (perPeriod.length) {
       s.appendChild(el("h3", null, L.vatBookings));
@@ -346,7 +645,7 @@
   }
 
   if (data.open_items.length) {
-    s = section("items", L.items);
+    s = section("items", L.items, L.desc.items.replace("{d}", day(m.to)));
     s.appendChild(table([L.party, L.number, L.date, L.due, L.amount, L.open, L.overdue, ""],
       data.open_items.map(function (r) {
         return [r.party, r.number, day(r.date), day(r.due), r.amount, r.open, String(r.days_overdue), r.side === "receivable" ? L.receivable : L.payableSide];
@@ -354,14 +653,14 @@
   }
 
   if (data.assets.length) {
-    s = section("assets", L.assets);
+    s = section("assets", L.assets, L.desc.assets);
     s.appendChild(table([L.name, L.cost, L.prior, L.thisYear, L.booked, L.bookValue],
       data.assets.map(function (r) { return [r.description || r.asset, r.cost, r.prior, r.due, r.booked, r.book_value_end]; }),
       [false, true, true, true, true, true]));
   }
 
   if (m.missing_receipts_count) {
-    s = section("missing", L.missing);
+    s = section("missing", L.missing, L.desc.missing, L.missingShort);
     s.appendChild(el("h3", null, L.byParty));
     s.appendChild(table([L.party, L.count, L.amount], data.missing_receipts_by_party.map(function (r) {
       return [r.payee, String(r.count), r.amount];
@@ -374,8 +673,7 @@
 
   var tf = data.tax_form;
   if (tf) {
-    s = section("taxform", L.taxForm + ": " + tf.form);
-    s.appendChild(el("p", { class: "sub" }, L.draft));
+    s = section("taxform", L.taxForm + ": " + tf.form, L.draft, L.taxForm);
     s.appendChild(table([L.line, L.name, L.amount], tf.lines.map(function (r) { return [r.line, r.name, r.amount]; }), [false, false, true]));
     [[L.unmapped, tf.unmapped], [L.notDeductible, tf.not_deductible]].forEach(function (g) {
       if (!g[1].length) return;
@@ -385,39 +683,89 @@
   }
 
   if (data.journal.length) {
-    s = section("bookings", L.search);
+    s = section("bookings", L.search, "");
+    var count = s.querySelector(".head p");
     var bar = el("div", { class: "filters" }), q = el("input", { type: "search", placeholder: L.searchHint, "aria-label": L.searchHint });
     var pick = el("select", { "aria-label": L.account });
     pick.appendChild(el("option", { value: "" }, L.allAccounts));
     Object.keys(byAcct).sort(function (a, b) { return acctName(a).localeCompare(acctName(b), locale, { numeric: true }); })
       .forEach(function (a) { pick.appendChild(el("option", { value: a }, acctName(a))); });
-    bar.appendChild(q); bar.appendChild(pick); s.appendChild(bar);
-    var count = el("p", { class: "sub" }), out = el("div");
-    s.appendChild(count); s.appendChild(out);
+    bar.appendChild(q); bar.appendChild(pick);
+    // Only while something is unconfirmed: that is what blocks "ready".
+    var conf = null;
+    if (data.journal.some(function (j) { return j.confirmed === "no"; })) {
+      conf = el("select", { "aria-label": L.unconfirmedOnly });
+      conf.appendChild(el("option", { value: "" }, L.allConfirmed));
+      conf.appendChild(el("option", { value: "no" }, L.unconfirmedOnly));
+      bar.appendChild(conf);
+    }
+    s.appendChild(bar);
+    var out = el("div");
+    s.appendChild(out);
     var hay = data.journal.map(function (j) {
       return [j.date, day(j.date), j.payee, j.narration, j.account, acctName(j.account), j.document, j.amount, String(j.amount).replace(".", ","), num(j.amount)].join(" ").toLowerCase();
     });
+    var SORT_BY = [function (j) { return j.date; }, function (j) { return j.payee || ""; }, function (j) { return j.narration || ""; },
+      function (j) { return acctName(j.account); }, function (j) { return j.document || ""; }, function (j) { return Number(j.amount); }];
+    var order = { on: function () { render(); } };
     var render = function () {
-      var words = q.value.toLowerCase().split(/\s+/).filter(Boolean), acct = pick.value;
+      var words = q.value.toLowerCase().split(/\s+/).filter(Boolean), acctPick = pick.value, onlyNo = conf && conf.value === "no";
       var hits = data.journal.filter(function (j, i) {
-        return (!acct || j.account === acct) && words.every(function (w) { return hay[i].indexOf(w) >= 0; });
+        return (!acctPick || j.account === acctPick) && (!onlyNo || j.confirmed === "no") && words.every(function (w) { return hay[i].indexOf(w) >= 0; });
       });
+      if (order.i != null) {
+        var key = SORT_BY[order.i];
+        hits = hits.slice().sort(function (a, b) { return compare(key(a), key(b)) * order.dir; });
+      }
       count.textContent = L.shown(Math.min(hits.length, SHOWN), hits.length);
       out.replaceChildren(table([L.date, L.party, L.text, L.account, L.document, L.amount], hits.slice(0, SHOWN).map(function (j) {
-        return [day(j.date), j.payee, j.narration, acctName(j.account), docCell(j.document, j.document_url), j.amount];
-      }), [false, false, false, false, false, true]));
+        return [day(j.date), j.payee, j.narration, acctName(j.account), docCell(j.document, j.document_url), withFx(j.amount, j.fx)];
+      }), [false, false, false, false, false, true], null, null, order));
+      edges(out);
     };
-    q.addEventListener("input", render); pick.addEventListener("change", render); render();
+    q.addEventListener("input", render); pick.addEventListener("change", render);
+    if (conf) conf.addEventListener("change", render);
+    render();
   }
 
-  s = section("tb", L.tb);
-  s.appendChild(table([L.code, L.name, L.opening, L.debit, L.credit, L.closing],
-    data.trial_balance.map(function (r) { return [r.code, r.name, r.opening, r.debit, r.credit, r.closing]; }),
-    [false, false, true, true, true, true],
-    [L.total, "", "", data.trial_totals.debit, data.trial_totals.credit, ""]));
+  s = section("tb", L.tb, L.desc.tb);
+  s.appendChild(table([L.account, L.opening, L.debit, L.credit, L.closing],
+    data.trial_balance.map(function (r) { return [acct(r.code, r.name), r.opening, r.debit, r.credit, r.closing]; }),
+    [false, true, true, true, true],
+    [L.total, "", data.trial_totals.debit, data.trial_totals.credit, ""]));
 
-  var foot = el("footer", null, L.source + " " + m.file + " (v" + m.version + ", sha256 " + String(m.sha256).slice(0, 12) + ")");
+  var foot = el("footer");
+  foot.appendChild(el("span", null, L.source + " " + m.file + " (v" + m.version + ", sha256 " + String(m.sha256).slice(0, 12) + ")"));
+  foot.appendChild(el("a", { href: L.home, target: "_blank", rel: "noopener noreferrer" }, L.madeWith));
   app.appendChild(foot);
+
+  // Highlights the section in view in the sticky navigation.
+  var links = Array.prototype.slice.call(nav.querySelectorAll("a")), ticking = false;
+  function spy() {
+    ticking = false;
+    var y = nav.getBoundingClientRect().bottom + 16, current = sectionList[0].id;
+    sectionList.forEach(function (sec) { if (sec.getBoundingClientRect().top <= y) current = sec.id; });
+    links.forEach(function (a) {
+      var on = a.getAttribute("href") === "#" + current;
+      // On a phone the tab row scrolls: keep the active tab in view.
+      if (on && !a.classList.contains("on")) nav.scrollTo({ left: a.offsetLeft - (nav.clientWidth - a.offsetWidth) / 2, behavior: "smooth" });
+      a.classList.toggle("on", on);
+    });
+  }
+  window.addEventListener("scroll", function () { if (!ticking) { ticking = true; requestAnimationFrame(spy); } }, { passive: true });
+  spy();
+  // A table scrolled sideways gets the divider on its pinned first column; one with more to the right fades out there.
+  function edge(w) {
+    w.classList.toggle("scrolled", w.scrollLeft > 0);
+    w.classList.toggle("more", w.scrollLeft + w.clientWidth < w.scrollWidth - 1);
+  }
+  function edges(root) { Array.prototype.forEach.call((root || document).querySelectorAll(".wrap"), edge); }
+  document.addEventListener("scroll", function (e) {
+    if (e.target.classList && e.target.classList.contains("wrap")) edge(e.target);
+  }, { capture: true, passive: true });
+  document.addEventListener("toggle", function (e) { edges(e.target); }, true);
+  window.addEventListener("resize", function () { edges(); });
+  edges();
 })();
 </script>
 </body>

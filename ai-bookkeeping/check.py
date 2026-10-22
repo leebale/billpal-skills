@@ -146,6 +146,8 @@ def book_a(tmp: Path) -> None:
         "rules": [{"id": "svs", "text": "Sozialversicherung", "money": "out", "account": "Expenses:SVS",
                    "tax": {"regime": "out_of_scope", "source": "rule"}}],
     }
+    fails("rule svs: needs user_said", "init", put(f / "init.json", init), "--out-dir", f)
+    init["rules"][0]["user_said"] = "SVS immer so buchen"
     ok("init", put(f / "init.json", init), "--out-dir", f)
     v1 = f / "2026-v1.beancount"
     fails("already exists", "init", f / "init.json", "--out-dir", f)
@@ -170,19 +172,27 @@ def book_a(tmp: Path) -> None:
         "accept_suggested": True,
         "assets": [],
         "groups": [{"vendor_key": "text:adobe systems software", "lines": [{"account": "Expenses:Software",
-                    "tax": {"regime": "reverse_charge", "rate": "20", "source": "user"}}], "confirmed": "user",
+                    "tax": {"regime": "reverse_charge", "rate": "20", "source": "user"}}], "confirmed": "user", "user_said": "Ja, passt",
                     "classified_by": "user", "document": "billpal:adobe-jan"}],
         "rows": [
             {"ref": "1:2", "lines": [{"account": "Assets:Fixed:Furniture", "asset": "macbook",
                                       "tax": {"regime": "standard", "rate": "20", "source": "document"}}],
-             "confirmed": "user", "document": "billpal:apple-123"},
+             "confirmed": "user", "user_said": "Ja, passt", "document": "billpal:apple-123"},
             {"ref": "1:3", "lines": [{"account": "Income:Sales", "tax": {"regime": "standard", "rate": "20", "source": "document"}}],
-             "confirmed": "user", "document": "billpal:out-2026-001"},
+             "confirmed": "user", "user_said": "Ja, passt", "document": "billpal:out-2026-001"},
             {"ref": "1:4", "lines": [{"account": "Liabilities:Tax-Office", "amount": "320.00"},
-                                     {"account": "Equity:Private"}], "confirmed": "user",
+                                     {"account": "Equity:Private"}], "confirmed": "user", "user_said": "Ja, passt",
              "no_document": "Abgabenkonto: USt-Zahlung und ESt-Vorauszahlung", "narration": "Abgabenkonto split"},
         ],
     }
+    silent = json.loads(json.dumps(decisions))
+    del silent["rows"][0]["user_said"]
+    fails("row 1:2: needs user_said", "commit", v1, p_jan, "--decisions", put(f / "silent.json", silent))
+    # an amount alone is no exact match: confirmed document needs the document to check it against
+    claimed = json.loads(json.dumps(decisions))
+    claimed["rows"][0] = {**claimed["rows"][0], "confirmed": "document", "match": "exact: trust me"}
+    fails("confirmed document is only for a row that pays one open document exactly", "commit", v1, p_jan,
+          "--decisions", put(f / "claimed.json", claimed))
     ok("commit", v1, p_jan, "--decisions", put(f / "jan.decisions.json", decisions))
     v2 = latest(f, "2026")
     assert v2.name == "2026-v2.beancount"
@@ -263,11 +273,16 @@ def book_a(tmp: Path) -> None:
     ok("commit", v5, pend["pending"], "--decisions", put(f / "feb.dec.json", {
         "accept_suggested": True,
         "rows": [{"ref": "1:1", "lines": [{"account": "Expenses:Bank-Charges", "tax": {"regime": "exempt", "source": "user"}}],
-                  "confirmed": "user", "no_document": "bank fee"},
-                 {"ref": "1:2", "lines": [{"account": "Assets:Transit"}], "confirmed": "user", "no_document": "transfer"}]}))
+                  "confirmed": "user", "user_said": "Ja, passt", "no_document": "bank fee"},
+                 {"ref": "1:2", "lines": [{"account": "Assets:Transit"}], "confirmed": "user", "user_said": "Ja, passt", "no_document": "transfer"}]}))
     v6 = latest(f, "2026")
     b6 = ledger.Book.load(v6)
     assert b6.balance("Assets:Transit") == D("300.00")
+    # the 300 withdrawn on 10 Feb waits for the cash book: fine for 10 days, then the other side is missing
+    in_transit = lambda through: {x["code"] for x in ledger.readiness(b6, ledger.parse_date(through))["fails"]}
+    assert "clearing_open" not in in_transit("2026-02-20") and "clearing_open" in in_transit("2026-02-21")
+    fails("holds is the currency code", "journal", v6, put(f / "wallet.json", {"schema": "journal/1", "accounts": [
+        {"account": "Assets:Wallet-USD", "role": "bank", "holds": "USD"}]}))
 
     # cash book: a withdrawal without the deposit fails, the full book passes
     cash = {"schema": "statement/1", "statements": [{
@@ -281,7 +296,7 @@ def book_a(tmp: Path) -> None:
     fails("cash goes negative", "stage", v6, put(f / "neg.json", neg))
     pend = ok("stage", v6, put(f / "cash.json", cash))
     ok("commit", v6, pend["pending"], "--decisions", put(f / "cash.dec.json", {"rows": [
-        {"ref": "1:1", "lines": [{"account": "Assets:Transit"}], "confirmed": "user", "no_document": "transfer"},
+        {"ref": "1:1", "lines": [{"account": "Assets:Transit"}], "confirmed": "user", "user_said": "Ja, passt", "no_document": "transfer"},
         {"ref": "1:2", "lines": [{"account": "Expenses:Office-Supplies", "tax": {"regime": "standard", "rate": "20"}}],
          "document": "billpal:libro"}]}))
     v7 = latest(f, "2026")
@@ -294,7 +309,7 @@ def book_a(tmp: Path) -> None:
     v8 = latest(f, "2026")
     fails("cash goes negative", "journal", v8, put(f / "neg2.json", {"schema": "journal/1", "entries": [{
         "date": "2026-02-02", "payee": "x", "lines": [{"account": "Assets:Cash", "amount": "-450.00"},
-                                                      {"account": "Equity:Private"}], "confirmed": "user"}]}))
+                                                      {"account": "Equity:Private"}], "confirmed": "user", "user_said": "Ja, passt"}]}))
 
     # readiness: the cash-book office supplies are agent-classified and unconfirmed
     rep = ledger.readiness(ledger.Book.load(v8), ledger.parse_date("2026-02-28"))
@@ -303,8 +318,10 @@ def book_a(tmp: Path) -> None:
     b8 = ledger.Book.load(v8)
     office = next(t for t in b8.txns if t.meta.get("document") == "billpal:libro")
     tid = office.meta["txn_id"]
+    fails("needs user_said", "journal", v8, put(f / "confirm.json", {"schema": "journal/1", "confirmations": [
+        {"kind": "booking", "ref": tid}]}))
     ok("journal", v8, put(f / "confirm.json", {"schema": "journal/1", "confirmations": [
-        {"kind": "booking", "ref": tid}, {"kind": "tax", "ref": tid}]}))
+        {"kind": "booking", "ref": tid, "user_said": "Libro passt"}, {"kind": "tax", "ref": tid, "user_said": "Libro passt"}]}))
     v9 = latest(f, "2026")
     rep = ok("check", v9, "--ready", "--through", "2026-02-28")
     assert rep["ready"]
@@ -334,10 +351,31 @@ def book_a(tmp: Path) -> None:
     assert b11.balance("Expenses:Depreciation") == D("400.00") and b11.balance("Equity:Private") == D("600.00")
     assert ledger.depreciation_plan(b11)[0]["to_book"] == 0
 
+    # disposal: the asset record gets disposed, the book value left leaves with it, depreciation runs to the date
+    side = f / "disposal"
+    side.mkdir()
+    shutil.copy(v10, side / v10.name)
+    ok("journal", side / v10.name, put(side / "gone.json", {"schema": "journal/1", "assets": [{
+        "id": "macbook", "description": "MacBook Pro", "document": "billpal:apple-123", "in_service": "2026-01-08",
+        "cost": "1500.00", "life_months": 36, "private_share": "0.2", "asset_account": "Assets:Fixed:Furniture",
+        "depreciation_account": "Expenses:Depreciation", "private_account": "Equity:Private", "disposed": "2026-06-30"}]}))
+    left = ok("depreciate", latest(side, "2026"))["assets"][0]
+    assert left["due"] == "250.00" and left["book_value_end"] == "1250.00", left
+    ok("journal", latest(side, "2026"), put(side / "off.json", {"schema": "journal/1",
+        "accounts": [{"account": "Expenses:Asset-Disposal", "name": "Anlagenabgang"}], "entries": [{
+        "date": "2026-06-30", "payee": "Verkauf MacBook", "confirmed": "user", "user_said": "ja", "no_document": "disposal",
+        "lines": [{"account": "Assets:Fixed:Furniture", "amount": "-1250.00", "asset": "macbook",
+                   "tax": {"regime": "out_of_scope", "source": "user"}},
+                  {"account": "Expenses:Asset-Disposal", "tax": {"regime": "out_of_scope", "source": "user"}}]}]}))
+    ok("depreciate", latest(side, "2026"), "--write")
+    gone = ledger.Book.load(latest(side, "2026"))
+    assert gone.balance("Assets:Fixed:Furniture") == 0, gone.balance("Assets:Fixed:Furniture")
+    assert "asset_cost" not in {x["code"] for x in ledger.readiness(gone, gone.fy_to)["warnings"]}
+
     # hostile payee and narration survive the ledger, Beancount, HTML and CSV
     evil = '=HYPERLINK("http://x")</script><img src=x onerror=alert(1)> "quoted" \\ back\nline'
     ok("journal", v11, put(f / "evil.json", {"schema": "journal/1", "entries": [{
-        "date": "2026-02-27", "payee": evil, "narration": evil, "confirmed": "user", "no_document": evil,
+        "date": "2026-02-27", "payee": evil, "narration": evil, "confirmed": "user", "user_said": "Ja, passt", "no_document": evil,
         "lines": [{"account": "Equity:Private", "amount": "10.00"}, {"account": "Liabilities:Tax-Office", "amount": "-10.00"}]}]}))
     v12 = latest(f, "2026")
     b12 = ledger.Book.load(v12)
@@ -346,6 +384,12 @@ def book_a(tmp: Path) -> None:
     assert out["reconciled"], out
     html = (f / "rep" / "report.html").read_text(encoding="utf-8")
     assert html.count("</script>") == 2 and "<img src=x" not in html
+    (f / "logo.svg").write_text("<svg onload=alert(1)></svg>")
+    fails("PNG, JPEG or WebP", "report", v12, "--out-dir", f / "rep-logo", "--to", "2026-02-28", "--logo", f / "logo.svg")
+    (f / "logo.png").write_bytes(b"\x89PNG\r\n\x1a\n" + b"\0" * 32)
+    ok("report", v12, "--out-dir", f / "rep-logo", "--to", "2026-02-28", "--format", "json", "--logo", f / "logo.png")
+    logo = json.loads((f / "rep-logo" / "report-data.json").read_text(encoding="utf-8"))["meta"]["logo"]
+    assert logo.startswith("data:image/png;base64,iVBORw0KGgo"), logo[:40]
     journal_csv = (f / "rep" / "journal.csv").read_text(encoding="utf-8-sig")
     assert "'=HYPERLINK" in journal_csv and ";-10,00;" in journal_csv
     data = json.loads((f / "rep" / "report-data.json").read_text(encoding="utf-8"))
@@ -361,7 +405,7 @@ def book_a(tmp: Path) -> None:
     assert svs.meta["confirmed"] == "rule" and svs.meta["classified_by"] == "rule:svs"
     ok("reverse", v12, "--txn", svs.meta["txn_id"], "--date", "2026-02-28", "--reason", "test",
        "--rebook", put(f / "rebook.json", {"lines": [{"account": "Expenses:Insurance", "tax": {"regime": "exempt"}}],
-                                           "confirmed": "user", "no_document": "SVS"}))
+                                           "confirmed": "user", "user_said": "Ja, passt", "no_document": "SVS"}))
     v13 = latest(f, "2026")
     b13 = ledger.Book.load(v13)
     assert b13.balance("Expenses:SVS") == D("1500.00") and b13.balance("Expenses:Insurance") == D("500.00")
@@ -372,7 +416,7 @@ def book_a(tmp: Path) -> None:
     ok("close-period", v13, "--through", "2026-02-28")
     v14 = latest(f, "2026")
     fails("closed period", "journal", v14, put(f / "late.json", {"schema": "journal/1", "entries": [{
-        "date": "2026-02-15", "payee": "x", "confirmed": "user",
+        "date": "2026-02-15", "payee": "x", "confirmed": "user", "user_said": "Ja, passt",
         "lines": [{"account": "Equity:Private", "amount": "1.00"}, {"account": "Assets:Cash", "amount": "-1.00"}]}]}))
 
     # fork: a second v15 written from v14 by another session
@@ -500,10 +544,10 @@ def book_b(tmp: Path) -> None:
     accounts = list({p["account"]: p for p in out["new_parties"]}.values())
     ok("commit-documents", v1, out["pending"], "--decisions", put(f / "docs.dec.json", {
         "accept_suggested": True, "accounts": accounts,
-        "documents": [{"id": "billpal:out-1", "lines": [{"index": 0, "account": "Income:Sales"}, {"index": 1, "account": "Income:Sales"}], "confirmed": "user"},
-                      {"id": "billpal:cn-1", "lines": [{"index": 0, "account": "Income:Sales"}], "confirmed": "user"},
-                      {"id": "billpal:out-2", "lines": [{"index": 0, "account": "Income:Sales"}], "confirmed": "user"},
-                      {"id": "billpal:out-3", "lines": [{"index": 0, "account": "Income:Sales"}], "confirmed": "user"}]}))
+        "documents": [{"id": "billpal:out-1", "lines": [{"index": 0, "account": "Income:Sales"}, {"index": 1, "account": "Income:Sales"}], "confirmed": "user", "user_said": "Ja, passt"},
+                      {"id": "billpal:cn-1", "lines": [{"index": 0, "account": "Income:Sales"}], "confirmed": "user", "user_said": "Ja, passt"},
+                      {"id": "billpal:out-2", "lines": [{"index": 0, "account": "Income:Sales"}], "confirmed": "user", "user_said": "Ja, passt"},
+                      {"id": "billpal:out-3", "lines": [{"index": 0, "account": "Income:Sales"}], "confirmed": "user", "user_said": "Ja, passt"}]}))
     v2 = latest(f, "fy2026")
     b2 = ledger.Book.load(v2)
     items, unalloc, errs = ledger.compute_items(b2)
@@ -541,19 +585,19 @@ def book_b(tmp: Path) -> None:
     dec = {"rows": [
         {"ref": "1:1", "lines": [{"account": "Assets:Receivables:10001-Kunde-Alt",
                                   "allocations": [{"document": "billpal:old-1", "amount": "-1190.00"}]}],
-         "confirmed": "user", "match": by_ref["1:1"]["candidates"][0]["explanation"]},
+         "confirmed": "user", "user_said": "Ja, passt", "match": by_ref["1:1"]["candidates"][0]["explanation"]},
         {"ref": "1:2", "lines": [{"account": "Liabilities:Payables:Lieferant-Schulz-KG",
                                   "allocations": [{"document": "billpal:in-1", "amount": "1190.00"}]},
                                  {"account": "Expenses:Discounts-Received",
                                   "tax": {"regime": "standard", "rate": "19", "source": "user"}}],
-         "confirmed": "user", "match": by_ref["1:2"]["candidates"][0]["explanation"]},
+         "confirmed": "user", "user_said": "Ja, passt", "match": by_ref["1:2"]["candidates"][0]["explanation"]},
         {"ref": "1:3", "lines": [{"account": "Assets:Receivables:10002-Kunde-Neu-AG",
-                                  "allocations": [{"document": "billpal:out-1", "amount": "-2142.00"}]}], "confirmed": "user"},
+                                  "allocations": [{"document": "billpal:out-1", "amount": "-2142.00"}]}], "confirmed": "user", "user_said": "Ja, passt"},
         {"ref": "1:4", "lines": [{"account": "Assets:Receivables:10002-Kunde-Neu-AG",
                                   "allocations": [{"document": "billpal:out-2", "amount": "-119.00"},
-                                                  {"document": None, "amount": "-238.00"}]}], "confirmed": "user"},
+                                                  {"document": None, "amount": "-238.00"}]}], "confirmed": "user", "user_said": "Ja, passt"},
         {"ref": "1:5", "lines": [{"account": "Expenses:Bank-Charges", "tax": {"regime": "exempt", "source": "user"}}],
-         "confirmed": "user", "no_document": "bank fee"}]}
+         "confirmed": "user", "user_said": "Ja, passt", "no_document": "bank fee"}]}
     over = json.loads(json.dumps(dec))
     over["rows"][3]["lines"][0]["allocations"][0]["document"] = "billpal:out-1"
     fails("is on Assets:Receivables:10001", "commit", v2, pend["pending"], "--decisions", put(f / "wrong-party.json", {
@@ -576,7 +620,7 @@ def book_b(tmp: Path) -> None:
     review = next(x for x in rep["fails"] if x["code"] == "review_open")
     assert review["items"] == ["billpal:review-1"], review
     ok("journal", v3, put(f / "realloc.json", {"schema": "journal/1", "entries": [{
-        "date": "2026-01-28", "payee": "Kunde Neu AG", "narration": "Sammelzahlung zuordnen", "confirmed": "user",
+        "date": "2026-01-28", "payee": "Kunde Neu AG", "narration": "Sammelzahlung zuordnen", "confirmed": "user", "user_said": "Ja, passt",
         "no_document": "allocation",
         "lines": [{"account": "Assets:Receivables:10002-Kunde-Neu-AG", "amount": "238.00",
                    "allocations": [{"document": None, "amount": "238.00"}]},
@@ -623,7 +667,7 @@ def book_b(tmp: Path) -> None:
          "party": {"name": "Kunde Neu AG", "personenkonto": "10002"}, "total": "119.00",
          "taxes": [{"regime": "standard", "rate": "19", "base": "100.00", "amount": "19.00"}]}]}))
     ok("commit-documents", v5, out["pending"], "--decisions", put(f / "out4.dec.json", {"accept_suggested": True, "documents": [
-        {"id": "billpal:out-4", "lines": [{"index": 0, "account": "Income:Sales"}], "confirmed": "user"}]}))
+        {"id": "billpal:out-4", "lines": [{"index": 0, "account": "Income:Sales"}], "confirmed": "user", "user_said": "Ja, passt"}]}))
     totals = lambda b: {(t["period"], t["tax"]) for t in ledger.vat_schedule(b, b.fy_from, b.fy_to)["totals"]}
     before = totals(ledger.Book.load(latest(f, "fy2026")))
     out4 = next(t for t in ledger.Book.load(latest(f, "fy2026")).txns if t.meta.get("document") == "billpal:out-4")
@@ -639,7 +683,7 @@ def book_b(tmp: Path) -> None:
          "document_number": "RE-2025-80", "document_date": "2025-12-01", "party": "Kunde Alt"},
         {"account": "Equity:Retained-Earnings", "amount": "-1500.00"}]}}), "--out-dir", g)
     ok("journal", latest(g, "c"), put(g / "pay.json", {"schema": "journal/1", "entries": [{
-        "date": "2026-01-10", "payee": "Kunde Alt", "confirmed": "user", "no_document": "test",
+        "date": "2026-01-10", "payee": "Kunde Alt", "confirmed": "user", "user_said": "Ja, passt", "no_document": "test",
         "lines": [{"account": "Assets:Bank:Giro", "amount": "200.00"},
                   {"account": "Assets:Receivables:10001-Kunde-Alt", "amount": "-200.00",
                    "allocations": [{"document": "billpal:carry", "amount": "-200.00"}]}]}]}))
@@ -650,6 +694,19 @@ def book_b(tmp: Path) -> None:
         "party": {"name": "Kunde Alt"}}]})
     wb = ok("writeback", latest(g, "c"), "--documents", carry)["documents"][0]
     assert wb["paid"] == "500.00" and wb["calls"][0]["arguments"] == {"document_id": "carry", "amount_paid": 500.0}, wb
+    # bad debt: the 300 left is written off and its output VAT corrected (UStG § 17)
+    ok("journal", latest(g, "c"), put(g / "bad.json", {"schema": "journal/1",
+        "accounts": [{"account": "Expenses:Bad-Debts", "name": "Forderungsverluste"}], "entries": [{
+        "date": "2026-03-31", "payee": "Kunde Alt", "confirmed": "user", "user_said": "ja, abschreiben", "no_document": "insolvency notice",
+        "lines": [{"account": "Assets:Receivables:10001-Kunde-Alt", "amount": "-300.00",
+                   "allocations": [{"document": "billpal:carry", "amount": "-300.00"}]},
+                  {"account": "Expenses:Bad-Debts", "amount": "300.00",
+                   "tax": {"regime": "standard", "rate": "19", "direction": "sale", "source": "user"}}]}]}))
+    bad = ledger.Book.load(latest(g, "c"))
+    items, _, _ = ledger.compute_items(bad)
+    assert items["billpal:carry"]["remaining"] == 0, items["billpal:carry"]
+    mar = next(t for t in ledger.vat_schedule(bad, bad.fy_from, bad.fy_to)["totals"] if t["period"] == "2026-03")
+    assert mar["tax"] == D("-47.90") and bad.balance("Expenses:Bad-Debts") == D("252.10"), (mar, bad.balance("Expenses:Bad-Debts"))
     print("book B (DE, accrual): ok")
 
 
@@ -798,11 +855,11 @@ def book_d(tmp: Path) -> None:
     assert pend["statements"][0]["counts"] == {"new": 5}, pend["statements"][0]
     ap = lambda acct, doc, amt: [{"account": acct, "allocations": [{"document": doc, "amount": amt}]}]
     fee = {"lines": [{"account": "Expenses:Bank-Charges", "tax": {"regime": "exempt", "source": "user"}}],
-           "confirmed": "user", "no_document": "parking"}
+           "confirmed": "user", "user_said": "Ja, passt", "no_document": "parking"}
     ok("commit", v, pend["pending"], "--decisions", put(f / "feb1.dec.json", {"rows": [
-        {"ref": "1:1", "lines": ap("Liabilities:Payables:Rabatt-AG", "billpal:disc", "100.00"), "confirmed": "user"},
-        {"ref": "1:2", "lines": ap("Liabilities:Payables:Rabatt-AG", "billpal:disc", "50.00"), "confirmed": "user"},
-        {"ref": "1:3", "lines": ap("Liabilities:Payables:70001-Mueller", "billpal:paydisc", "119.00"), "confirmed": "user"},
+        {"ref": "1:1", "lines": ap("Liabilities:Payables:Rabatt-AG", "billpal:disc", "100.00"), "confirmed": "user", "user_said": "Ja, passt"},
+        {"ref": "1:2", "lines": ap("Liabilities:Payables:Rabatt-AG", "billpal:disc", "50.00"), "confirmed": "user", "user_said": "Ja, passt"},
+        {"ref": "1:3", "lines": ap("Liabilities:Payables:70001-Mueller", "billpal:paydisc", "119.00"), "confirmed": "user", "user_said": "Ja, passt"},
         {"ref": "1:4", **fee}, {"ref": "1:5", **fee}]}))
     v = latest(f, "d")
     wb = {d["document"]: d for d in ok("writeback", v)["documents"]}
@@ -835,7 +892,7 @@ def book_d(tmp: Path) -> None:
     ok("close-period", v, "--through", "2026-01-31")
     v = latest(f, "d")
     fails("tax point 2026-01-20 is in the period closed", "journal", v, put(f / "late-tax.json", {"schema": "journal/1", "entries": [{
-        "date": "2026-02-12", "payee": "Nachtrag", "confirmed": "user", "no_document": "test",
+        "date": "2026-02-12", "payee": "Nachtrag", "confirmed": "user", "user_said": "Ja, passt", "no_document": "test",
         "lines": [{"account": "Expenses:Small-Equipment", "amount": "11.90",
                    "tax": {**vat19, "point": "2026-01-20", "source": "user"}}, {"account": "Equity:Private"}]}]}))
     fails("cannot change after", "journal", v, put(f / "ist.json", {"schema": "journal/1", "profile": {"vat_basis": "payment"}}))
@@ -846,11 +903,11 @@ def book_d(tmp: Path) -> None:
     ok("journal", v, put(f / "feb-misc.json", {"schema": "journal/1", "assets": [{**asset, "id": "chair", "cost": "400.00",
                                                                                  "in_service": "2026-02-12"}],
         "entries": [
-            {"date": "2026-02-12", "payee": "Cloud Ltd", "confirmed": "user", "no_document": "test",
+            {"date": "2026-02-12", "payee": "Cloud Ltd", "confirmed": "user", "user_said": "Ja, passt", "no_document": "test",
              "lines": [{"account": "Expenses:Software", "amount": "100.00",
                         "tax": {"regime": "reverse_charge", "rate": "19", "source": "user", "report_codes": rc_codes}},
                        {"account": "Equity:Private-Deposits"}]},
-            {"date": "2026-02-12", "payee": "Möbel KG", "confirmed": "user", "no_document": "test",
+            {"date": "2026-02-12", "payee": "Möbel KG", "confirmed": "user", "user_said": "Ja, passt", "no_document": "test",
              "lines": [{"account": "Assets:Fixed:Furniture", "amount": "500.00", "asset": "chair", "tax": oos},
                        {"account": "Assets:Fixed:Furniture", "amount": "100.00", "tax": oos},
                        {"account": "Equity:Private-Deposits"}]}]}))
@@ -948,11 +1005,13 @@ def book_e(tmp: Path) -> None:
         "chart": "oekr", "new_business": True,
         "accounts": [{"account": "Assets:Bank:Wise", "role": "bank", "name": "Wise"},
                      {"account": "Assets:Bank:Revolut", "role": "bank", "name": "Revolut", "date": "2026-03-01"}],
-        "rules": [{"id": "phone", "text": "Magenta", "money": "out", "account": "Expenses:Phone", "share": "0.6", "tax": v20}],
+        "rules": [{"id": "phone", "text": "Magenta", "money": "out", "account": "Expenses:Phone", "share": "0.6", "tax": v20,
+                   "user_said": "60 % geschäftlich"}],
         "allocations": [
             {"id": "rent", "text": "PMV Immobilien", "money": "out", "account": "Expenses:Rent", "tax": oos,
-             "every": "month", "document": "Mietvertrag 2024", **home},
-            {"id": "energy", "text": "Wien Energie", "money": "out", "account": "Expenses:Utilities", "tax": v20, **home}]}),
+             "every": "month", "document": "Mietvertrag 2024", "user_said": "8,5 von 52 m²", **home},
+            {"id": "energy", "text": "Wien Energie", "money": "out", "account": "Expenses:Utilities", "tax": v20,
+             "user_said": "8,5 von 52 m²", **home}]}),
        "--out-dir", f)
     v = f / "e-v1.beancount"
     b = ledger.Book.load(v)
@@ -976,7 +1035,7 @@ def book_e(tmp: Path) -> None:
     sug = json.loads(Path(pend["pending"]).read_text())["statements"][0]["rows"][1]["suggested"]["lines"]
     assert [(x["account"], x["amount"]) for x in sug] == [("Expenses:Phone", "30.00"), ("Equity:Private", "20.00")], sug
     ok("commit", v, pend["pending"], "--decisions", put(f / "jan.dec.json", {"accept_suggested": True, "rows": [
-        {"ref": "1:1", "lines": [{"account": "Income:Services", "tax": {**v20, "source": "user"}}], "confirmed": "user",
+        {"ref": "1:1", "lines": [{"account": "Income:Services", "tax": {**v20, "source": "user"}}], "confirmed": "user", "user_said": "Ja, passt",
          "no_document": "test"}, {"ref": "1:2", "document": "billpal:magenta-01"}]}))
     v = latest(f, "e")
     b = ledger.Book.load(v)
@@ -1009,7 +1068,7 @@ def book_e(tmp: Path) -> None:
 
     # readiness: the February rent is missing; Revolut, opened 1 March, owes statements from March on only
     ok("journal", v, put(f / "revolut.json", {"schema": "journal/1", "entries": [{
-        "date": "2026-03-05", "payee": "Einlage", "confirmed": "user", "no_document": "private deposit",
+        "date": "2026-03-05", "payee": "Einlage", "confirmed": "user", "user_said": "Ja, passt", "no_document": "private deposit",
         "lines": [{"account": "Assets:Bank:Revolut", "amount": "100.00"}, {"account": "Equity:Private"}]}]}))
     v = latest(f, "e")
     b = ledger.Book.load(v)
@@ -1092,7 +1151,7 @@ def book_e(tmp: Path) -> None:
     assert json.loads(Path(pend["pending"]).read_text())["review_holds"][0]["document"] == "billpal:held"
     ok("commit", v, pend["pending"], "--decisions", put(f / "feb.dec.json", {"rows": [
         {"ref": "1:1", "lines": [{"account": "Expenses:Office-Supplies", "tax": {**v20, "source": "user"}}],
-         "confirmed": "user", "no_document": "waiting for Billpal review"}]}))
+         "confirmed": "user", "user_said": "Ja, passt", "no_document": "waiting for Billpal review"}]}))
     v = latest(f, "e")
     b = ledger.Book.load(v)
     assert [h["document"] for h in b.holds] == ["billpal:held"], b.holds
@@ -1116,7 +1175,7 @@ def book_e(tmp: Path) -> None:
     fails("method is one of", "stage", v, put(f / "mar-card.json", card))
     pend = ok("stage", v, put(f / "mar.json", mar))
     pay = lambda n, i, **kw: {"ref": f"1:{n}", "lines": [{"account": "Expenses:Office-Supplies", "tax": {**v20, "source": "user"}}],
-                              "confirmed": "user", "document": f"billpal:{i}", **kw}
+                              "confirmed": "user", "user_said": "Ja, passt", "document": f"billpal:{i}", **kw}
     ok("commit", v, pend["pending"], "--decisions", put(f / "mar.dec.json", {"rows": [
         pay(1, "inv-1", settles=True), pay(2, "t-1"), pay(3, "p-1"), pay(4, "old")]}))
     v = latest(f, "e")
@@ -1131,7 +1190,7 @@ def book_e(tmp: Path) -> None:
 
     # an office flat rate next to the allocated home office share: usually either/or, so it warns
     ok("journal", v, put(f / "flat.json", {"schema": "journal/1", "entries": [{
-        "date": "2026-12-31", "payee": "Arbeitsplatzpauschale", "confirmed": "user", "no_document": "flat rate",
+        "date": "2026-12-31", "payee": "Arbeitsplatzpauschale", "confirmed": "user", "user_said": "Ja, passt", "no_document": "flat rate",
         "meta": {"flat_rate": "home_office"},
         "lines": [{"account": "Expenses:Rent", "amount": "300.00", "tax": {"regime": "out_of_scope", "source": "user"}},
                   {"account": "Equity:Private"}]}]}))
@@ -1212,18 +1271,18 @@ def book_f(tmp: Path) -> None:
         {"ref": "1:1", "document": "billpal:cur-1", "match": match("1:1")},
         {"ref": "1:2", "document": "billpal:cur-2", "match": match("1:2")},
         {"ref": "1:3", "lines": [{"account": "Expenses:Bank-Charges", "tax": {"regime": "exempt", "source": "user"}}],
-         "confirmed": "user", "no_document": "bank fee"},
-        {"ref": "1:4", "lines": [{"account": "Expenses:Software"}], "confirmed": "user", "document": "billpal:het-1",
+         "confirmed": "user", "user_said": "Ja, passt", "no_document": "bank fee"},
+        {"ref": "1:4", "lines": [{"account": "Expenses:Software"}], "confirmed": "user", "user_said": "Ja, passt", "document": "billpal:het-1",
          "match": match("1:4")},
         {"ref": "1:5", "lines": [{"account": "Expenses:Office-Supplies", "tax": {"regime": "standard", "rate": "20",
                                                                                  "source": "document"}}],
          "confirmed": "document", "document": "billpal:shop-r"},
         {"ref": "1:6", "lines": [{"account": "Expenses:Software", "amount": "12.00"}, {"account": "Equity:Private"}],
-         "confirmed": "user", "document": "billpal:notion-1"},
-        {"ref": "1:7", "lines": [{"account": "Expenses:Software"}], "confirmed": "user", "document": "billpal:het-1",
+         "confirmed": "user", "user_said": "Ja, passt", "document": "billpal:notion-1"},
+        {"ref": "1:7", "lines": [{"account": "Expenses:Software"}], "confirmed": "user", "user_said": "Ja, passt", "document": "billpal:het-1",
          "match": "partial: second instalment"},
     ]
-    group = [{"vendor_key": "text:cursor ai powered", "lines": [{"account": "Expenses:Software"}], "confirmed": "user"}]
+    group = [{"vendor_key": "text:cursor ai powered", "lines": [{"account": "Expenses:Software"}], "confirmed": "user", "user_said": "Ja, passt"}]
     twice = [{**rows_dec[0]}, {**rows_dec[1], "document": "billpal:cur-1"}, *rows_dec[2:]]
     fails("paid in full only once", "commit", v, pend["pending"], "--documents", docs, "--decisions",
           put(f / "twice.json", {"groups": group, "rows": twice}))
@@ -1253,9 +1312,9 @@ def book_f(tmp: Path) -> None:
             card(3, "-89.14", "Cursor Ai Powered Ide"), card(4, "-5.00", "Spar Filiale 12")]}]}
     pend = ok("stage", latest(f, "f"), put(f / "feb.json", feb))
     rc = {"regime": "reverse_charge", "rate": "20", "source": "user"}
-    feb_dec = {"groups": [{"vendor_key": "text:cursor ai powered", "payee": "Cursor", "confirmed": "user",
+    feb_dec = {"groups": [{"vendor_key": "text:cursor ai powered", "payee": "Cursor", "confirmed": "user", "user_said": "Ja, passt",
                            "lines": [{"account": "Expenses:Software", "tax": rc}]}],
-               "rows": [{"ref": "1:3", "payee": "Spar", "confirmed": "user", "lines": [
+               "rows": [{"ref": "1:3", "payee": "Spar", "confirmed": "user", "user_said": "Ja, passt", "lines": [
                    {"account": "Expenses:Office-Supplies", "tax": {"regime": "standard", "rate": "20", "source": "user"}}]}]}
     fails("already booked, again on row 1:1", "commit", latest(f, "f"), pend["pending"], "--documents", docs, "--decisions",
           put(f / "feb.twice.json", {**feb_dec, "rows": [rows_dec[0], *feb_dec["rows"]]}))
@@ -1271,6 +1330,10 @@ def book_f(tmp: Path) -> None:
     assert (f / "rep" / "missing-receipts.csv").read_text(encoding="utf-8-sig").startswith("date,payee,amount,account")
     het = [j["document"] for j in data["journal"] if j["account"] == "Expenses:Software" and j["payee"] == "Hetzner Online GmbH"]
     assert het == ["billpal:het-1", "billpal:het-1"], het
+    fx = {j["date"]: j["fx"] for j in data["journal"] if j["payee"] == "Cursor" and j["account"] == "Expenses:Software"}
+    assert fx["2026-02-02"] == {"amount": "100.18", "currency": "USD", "rate": "0.88979836"} and fx["2026-02-03"] is None, fx
+    rc = [j for j in data["journal"] if j["date"] == "2026-02-02" and j["payee"] == "Cursor"]
+    assert all(j["fx"] is None for j in rc if "VAT" in j["account"]) and any(j["fx"] and j["fx"]["amount"].startswith("-") for j in rc), rc
 
     # the gates: country disagreement, an EU OSS number, a home supplier, VAT on the bill, DE 2020, small business
     nd = lambda party, **kw: ledger.norm_doc(inv("g", "2026-03-01", "10.00", party, **kw), b)
@@ -1293,7 +1356,7 @@ def book_f(tmp: Path) -> None:
     bd = lambda i, party: ledger.norm_doc(inv(i, "2026-03-01", "15.00", party), b, need_rate=False)
     st, row = {"account": "Assets:Bank:Wise", "source_id": "x"}, {"ref": "9:1", "booking_date": "2026-03-02",
                                                                      "amount": "-30.00", "seq": 1, "row_key": "k"}
-    batch = {"lines": [{"account": "Expenses:Software"}], "documents": ["billpal:l1", "billpal:l2"], "confirmed": "user"}
+    batch = {"lines": [{"account": "Expenses:Software"}], "documents": ["billpal:l1", "billpal:l2"], "confirmed": "user", "user_said": "Ja, passt"}
     txt = ledger.statement_txn(b, st, row, batch, {"billpal:l1": bd("l1", linear), "billpal:l2": bd("l2", linear)})
     assert '"Linear Orbit, Inc."' in txt and 'tax_regime: "reverse_charge"' in txt, txt
     raises("different tax treatments", ledger.statement_txn, b, st, row, batch,
@@ -1404,7 +1467,7 @@ def book_h(tmp: Path) -> None:
             {"booking_date": "2026-01-04", "amount": "-98.00", "counterparty": "Office KG", "text": "Office KG"}]}]}
     pend = ok("stage", v, put(f / "jan.json", jan))
     line = [{"account": "Expenses:Office-Supplies", "tax": {"regime": "standard", "rate": "20", "source": "user"}}]
-    dec_ = lambda doc: put(f / "jan.dec.json", {"rows": [{"ref": "1:1", "lines": line, "confirmed": "user", "document": doc}]})
+    dec_ = lambda doc: put(f / "jan.dec.json", {"rows": [{"ref": "1:1", "lines": line, "confirmed": "user", "user_said": "Ja, passt", "document": doc}]})
     fails("document billpal:bad could not be read", "commit", v, pend["pending"], "--documents", put(f / "docs.json", {
         "schema": "documents/1", **docs}), "--decisions", dec_("billpal:bad"))
     ok("commit", v, pend["pending"], "--documents", f / "docs.json", "--decisions", dec_("billpal:off-1"))
@@ -1437,7 +1500,7 @@ def book_g(tmp: Path) -> None:
     lines = ledger.share_lines(b, {"id": "car", "share": "0.6", "account": "Expenses:Corporate-Tax"}, D("-100.00"))
     assert lines[1] == {"account": "Liabilities:Shareholder", "amount": "40.00"}, lines
     ok("journal", v, put(f / "loan.json", {"schema": "journal/1", "entries": [{
-        "date": "2026-03-02", "payee": "Gesellschafter", "confirmed": "user", "no_document": "shareholder loan",
+        "date": "2026-03-02", "payee": "Gesellschafter", "confirmed": "user", "user_said": "Ja, passt", "no_document": "shareholder loan",
         "lines": [{"account": "Assets:Bank:Giro", "amount": "500.00"}, {"account": "Liabilities:Shareholder"}]}]}))
     roll = ledger.build_rollover(ledger.Book.load(latest(f, "g")), None, None, False)
     assert {"account": "Liabilities:Shareholder", "amount": "-500.00"} in roll["opening_lines"], roll["opening_lines"]
@@ -1459,7 +1522,7 @@ def performance(tmp: Path) -> None:
     parts = []
     for i in range(50_000):
         d = ledger.date(2026, 1 + i % 12, 1 + i % 28)
-        meta = {"txn_id": f"p{i:07d}", "confirmed": "user", "classified_by": "rule:x", "no_document": "perf"}
+        meta = {"txn_id": f"p{i:07d}", "confirmed": "user", "user_said": "Ja, passt", "classified_by": "rule:x", "no_document": "perf"}
         posts = [ledger.Posting("Assets:Bank:Giro", D("-12.34"), "EUR"), ledger.Posting("Expenses:Software", D("12.34"), "EUR")]
         parts.append(ledger.ser_txn(d, "*", f"Vendor {i % 300}", "test", meta, posts, 2))
     big = f / "big-v2.beancount"
@@ -1523,12 +1586,12 @@ def book_c(tmp: Path) -> None:
     assert b.balance("Expenses:Depreciation") == D("1200.00")
     # US sales tax: collected on sales without a VAT registration, a cost on purchases, reported as its own type
     st = {"type": "sales_tax", "regime": "standard", "rate": "8.875", "source": "user"}
-    sale = {"date": "2026-02-02", "payee": "Client", "confirmed": "user", "no_document": "test",
+    sale = {"date": "2026-02-02", "payee": "Client", "confirmed": "user", "user_said": "Ja, passt", "no_document": "test",
             "lines": [{"account": "Assets:Bank:Checking", "amount": "108.88"}, {"account": "Income:Sales", "tax": st}]}
     fails("type sales_tax", "journal", latest(f, "acme-2026"), put(f / "vat-sale.json", {"schema": "journal/1", "entries": [
         {**sale, "lines": [sale["lines"][0], {"account": "Income:Sales", "tax": {**st, "type": "vat"}}]}]}))
     ok("journal", latest(f, "acme-2026"), put(f / "sales-tax.json", {"schema": "journal/1", "entries": [sale, {
-        "date": "2026-02-03", "payee": "Staples", "confirmed": "user", "no_document": "test",
+        "date": "2026-02-03", "payee": "Staples", "confirmed": "user", "user_said": "Ja, passt", "no_document": "test",
         "lines": [{"account": "Assets:Bank:Checking", "amount": "-54.44"}, {"account": "Expenses:Office-Supplies", "tax": st}]}]}))
     b = ledger.Book.load(latest(f, "acme-2026"))
     assert b.balance("Liabilities:Sales-Tax-Payable") == D("-8.88") and b.balance("Income:Sales") == D("-100.00")
@@ -1662,7 +1725,7 @@ def book_j(tmp: Path) -> None:
     fails("share (above 0", "journal", v, put(f / "bad-share.json", {"schema": "journal/1", "accounts": [
         {"account": "Equity:Capital:Cy", "role": "private", "partner": "Cy", "share": "0.1"}]}))
     st = lambda j, rate: {"type": "sales_tax", "regime": "standard", "rate": rate, "jurisdiction": j, "source": "user"}
-    entry = lambda d, amount, lines, payee="Client": {"date": d, "payee": payee, "confirmed": "user", "no_document": "test",
+    entry = lambda d, amount, lines, payee="Client": {"date": d, "payee": payee, "confirmed": "user", "user_said": "Ja, passt", "no_document": "test",
                                                      "lines": [{"account": "Assets:Bank:Checking", "amount": amount}] + lines}
     ok("journal", v, put(f / "year.json", {"schema": "journal/1", "entries": [
         entry("2026-02-01", "108.25", [{"account": "Income:Sales", "tax": st("CA", "8.25")}]),
@@ -1714,7 +1777,7 @@ def book_k(tmp: Path) -> None:
                     "vat_basis": "payment", "vat_period": "quarter", "chart": "skr03"}}), "--out-dir", f)
     v = f / "k-v1.beancount"
     vat = lambda regime, rate: {"regime": regime, "rate": rate, "source": "user"}
-    entry = lambda d, amount, lines, payee: {"date": d, "payee": payee, "confirmed": "user", "no_document": "test",
+    entry = lambda d, amount, lines, payee: {"date": d, "payee": payee, "confirmed": "user", "user_said": "Ja, passt", "no_document": "test",
                                              "lines": [{"account": "Assets:Bank:Giro", "amount": amount}] + lines}
     fails("open Expenses:Travel:Nondeductible", "journal", v, put(f / "bad.json", {"schema": "journal/1", "entries": [
         entry("2026-01-05", "-119.00", [{"account": "Expenses:Travel", "tax": vat("standard", "19"), "deductible": "0.7"}], "DB")]}))
@@ -1791,7 +1854,7 @@ def book_k(tmp: Path) -> None:
         "ledger": {**eur, "currency": "USD"},
         "profile": {"country": "US", "legal_form": "Sole proprietorship", "basis": "cash", "vat_status": "none", "chart": "qbo"}}),
        "--out-dir", u)
-    cash = lambda d, amount, acct, payee, **kw: {"date": d, "payee": payee, "confirmed": "user", "no_document": "test",
+    cash = lambda d, amount, acct, payee, **kw: {"date": d, "payee": payee, "confirmed": "user", "user_said": "Ja, passt", "no_document": "test",
                                                  "lines": [{"account": "Assets:Bank:Checking", "amount": amount}, {"account": acct, **kw}]}
     ok("journal", u / "u-v1.beancount", put(u / "year.json", {"schema": "journal/1", "entries": [
         cash("2026-02-01", "1000.00", "Income:Sales", "Client"),
@@ -1807,7 +1870,7 @@ def book_k(tmp: Path) -> None:
     # a supplier account books under its Personenkonto, the number Billpal's contacts export carries
     ok("journal", latest(f, "k"), put(f / "ap.json", {"schema": "journal/1",
         "accounts": [{"account": "Liabilities:Payables:Druckerei", "name": "Druckerei", "personenkonto": "70001"}],
-        "entries": [{"date": "2026-02-01", "payee": "Druckerei", "confirmed": "user", "document": "billpal:print",
+        "entries": [{"date": "2026-02-01", "payee": "Druckerei", "confirmed": "user", "user_said": "Ja, passt", "document": "billpal:print",
                      "lines": [{"account": "Liabilities:Payables:Druckerei", "amount": "-119.00"},
                                {"account": "Expenses:Office-Supplies", "tax": vat("standard", "19")}]}]}))
     out = ok("export", latest(f, "k"), "--format", "datev", "--out-dir", f / "ap", "--consultant", "1001", "--client", "42",
@@ -1827,7 +1890,7 @@ def book_l(tmp: Path) -> None:
         "profile": {"country": "DE", "legal_form": "Einzelunternehmen", "basis": "cash", "vat_status": "regular",
                     "vat_basis": "payment", "vat_period": "quarter", "chart": "skr03"}}), "--out-dir", f)
     vat = {"regime": "standard", "rate": "19", "source": "user"}
-    entry = lambda d, amount, account, payee: {"date": d, "payee": payee, "confirmed": "user", "no_document": "test",
+    entry = lambda d, amount, account, payee: {"date": d, "payee": payee, "confirmed": "user", "user_said": "Ja, passt", "no_document": "test",
                                                "lines": [{"account": "Assets:Bank:Giro", "amount": amount},
                                                          {"account": account, "tax": vat}]}
     ok("journal", f / "l-v1.beancount", put(f / "year.json", {"schema": "journal/1", "entries": [
@@ -1856,7 +1919,7 @@ def book_l(tmp: Path) -> None:
     assert ledger.status(b)["open_questions"][0]["id"] == "laptop"
     ok("journal", latest(f, "l"), put(f / "refund.json", {"schema": "journal/1", "questions": [
         {"id": "laptop", "answer": "Yes, a MacBook"}], "entries": [
-        {"date": "2026-04-20", "payee": "Finanzamt", "confirmed": "user", "no_document": "test",
+        {"date": "2026-04-20", "payee": "Finanzamt", "confirmed": "user", "user_said": "Ja, passt", "no_document": "test",
          "lines": [{"account": "Assets:Bank:Giro", "amount": "122.36"}, {"account": "Liabilities:Tax-Office"}]}]}))
     b = ledger.Book.load(latest(f, "l"))
     codes = {w["code"] for w in ledger.readiness(b, None)["warnings"]}
@@ -1876,7 +1939,7 @@ def book_l(tmp: Path) -> None:
     assert [u["document"] for u in unpaid] == ["billpal:unpaid"] and unpaid[0]["total"] == "49.00", unpaid
 
     # US: contractors paid by bank at or above the 1099-NEC floor
-    pay = lambda d, amount, text="": {"date": d, "payee": "Jane Dev", "confirmed": "user", "no_document": "test", "narration": text,
+    pay = lambda d, amount, text="": {"date": d, "payee": "Jane Dev", "confirmed": "user", "user_said": "Ja, passt", "no_document": "test", "narration": text,
                                       "lines": [{"account": "Assets:Bank:Checking", "amount": amount}, {"account": "Expenses:Contractors"}]}
     # the debit card payment comes from the checking account too, but goes on 1099-K
     ok("journal", latest(tmp / "c", "acme-2026"), put(f / "us.json", {"schema": "journal/1", "entries": [
@@ -1886,6 +1949,114 @@ def book_l(tmp: Path) -> None:
     flags = {c: items for c, _, items in ledger.review_flags(u, u.live_txns())}
     assert flags["contractors_1099"] == ["Jane Dev: 2100.00"], flags
     print("book L (review flags, VAT due dates and payments, questions, unpaid documents): ok")
+
+
+def book_m(tmp: Path) -> None:
+    """A fiscal year that is not the calendar year: a shifted year, a short year, and 1099s by calendar year."""
+    f = tmp / "m"
+    f.mkdir()
+    init = {"schema": "init/1", "title": "Shift Inc", "file_label": "m-2025-26", "chart": "qbo", "new_business": True,
+            "ledger": {"fiscal_year_from": "2025-07-01", "fiscal_year_to": "2026-06-30", "currency": "USD"},
+            "profile": {"country": "US", "legal_form": "Inc", "company": True, "basis": "cash", "vat_status": "none",
+                        "chart": "qbo", "language": "en"}}
+    fails("longer than 12 months", "init", put(f / "long.json", {
+        **init, "file_label": "long", "ledger": {**init["ledger"], "fiscal_year_to": "2026-07-31"}}), "--out-dir", f)
+    ok("init", put(f / "init.json", init), "--out-dir", f)
+    v1 = f / "m-2025-26-v1.beancount"
+
+    # 1099s count per calendar year: 700 in 2025 passes the 600 floor, 2,100 in 2026 the 2,000 floor
+    side = tmp / "m-1099"
+    side.mkdir()
+    shutil.copy(v1, side / v1.name)
+    pay = lambda d, amount: {"date": d, "payee": "Jane Dev", "confirmed": "user", "user_said": "Ja, passt", "no_document": "test",
+                             "lines": [{"account": "Assets:Bank:Checking", "amount": amount}, {"account": "Expenses:Contractors"}]}
+    ok("journal", side / v1.name, put(side / "pay.json", {"schema": "journal/1", "entries": [
+        pay("2025-11-03", "-700.00"), pay("2026-03-02", "-1500.00"), pay("2026-05-04", "-600.00")]}))
+    u = ledger.Book.load(latest(side, "m-2025-26"))
+    flags = {c: items for c, _, items in ledger.review_flags(u, u.live_txns())}
+    assert flags["contractors_1099"] == ["2025 Jane Dev: 700.00", "2026 Jane Dev: 2100.00"], flags
+
+    # a short year to the calendar year end, then 12 months again
+    ok("close-period", v1, "--through", "2026-06-30")
+    ok("rollover", latest(f, "m-2025-26"), "--to", "2026-12-31", "--label", "m-2026h2", "--write")
+    short = ledger.Book.load(f / "m-2026h2-v1.beancount")
+    assert (short.fy_from, short.fy_to) == (ledger.date(2026, 7, 1), ledger.date(2026, 12, 31))
+    assert ok("rollover", short.path)["new_fiscal_year"] == ["2027-01-01", "2027-12-31"]
+    print("book M (shifted and short fiscal years): ok")
+
+
+def book_n(tmp: Path) -> None:
+    """DE cash basis with VAT on the invoice basis: unpaid sales invoices are listed, and their late payment
+    keeps the invoice date as tax point after the period is closed."""
+    f = tmp / "n"
+    f.mkdir()
+    ok("init", put(f / "init.json", {
+        "schema": "init/1", "title": "Soll Design", "file_label": "n", "chart": "skr03", "new_business": True,
+        "ledger": {"fiscal_year_from": "2026-01-01", "fiscal_year_to": "2026-12-31", "currency": "EUR"},
+        "profile": {"country": "DE", "legal_form": "Einzelunternehmen", "basis": "cash", "vat_status": "regular",
+                    "vat_basis": "invoice", "vat_period": "month", "chart": "skr03"}}), "--out-dir", f)
+    sale = lambda i, kind, d, total, vat, who: {
+        "id": f"billpal:{i}", "kind": kind, "direction": "out", "number": i, "date": d, "party": {"name": who},
+        "total": total, "taxes": [{"type": "vat", "regime": "standard", "rate": "19",
+                                   "base": format(D(total) - D(vat), "f"), "amount": vat}]}
+    docs = put(f / "docs.json", {"schema": "documents/1", "documents": [
+        sale("a", "invoice", "2026-01-05", "1190.00", "190.00", "Kunde A"),
+        sale("b", "invoice", "2026-01-25", "595.00", "95.00", "Kunde B"),
+        sale("c", "credit_note", "2026-01-28", "119.00", "19.00", "Kunde B")]})
+    month = lambda src, start, end, opening, closing, row: {"schema": "statement/1", "statements": [{
+        "source_id": src, "account": "Assets:Bank:Giro", "from": start, "to": end, "opening": opening,
+        "closing": closing, "extraction": "manual", "rows": [row]}]}
+    paid = lambda doc, point: {"rows": [{"ref": "1:1", "lines": [{"account": "Income:Sales", "tax": {
+        "regime": "standard", "rate": "19", "point": point, "source": "document"}}],
+        "confirmed": "user", "user_said": "ja", "document": doc}]}
+
+    pend = ok("stage", f / "n-v1.beancount", put(f / "jan.json", month(
+        "jan", "2026-01-01", "2026-01-31", "0.00", "1190.00",
+        {"booking_date": "2026-01-20", "amount": "1190.00", "counterparty": "Kunde A", "text": "Rechnung a"})))
+    cand = ok("candidates", f / "n-v1.beancount", pend["pending"], "--documents", docs)
+    assert {(s["document"], s["vat"]) for s in cand["sales_without_payment"]} == {
+        ("billpal:a", "190.00"), ("billpal:b", "95.00"), ("billpal:c", "-19.00")}, cand["sales_without_payment"]
+    ok("commit", f / "n-v1.beancount", pend["pending"], "--documents", docs,
+       "--decisions", put(f / "jan.dec.json", paid("billpal:a", "2026-01-05")))
+    warns = {w["code"]: w for w in ledger.readiness(ledger.Book.load(latest(f, "n")), ledger.date(2026, 1, 31))["warnings"]}
+    assert [i.split(" (")[1] for i in warns["sales_unpaid"]["items"]] == ["billpal:b)", "billpal:c)"], warns["sales_unpaid"]
+    assert "VAT 95.00" in warns["sales_unpaid"]["items"][0]
+
+    ok("close-period", latest(f, "n"), "--through", "2026-01-31")
+    feb = put(f / "feb.json", month("feb", "2026-02-01", "2026-02-28", "1190.00", "1785.00",
+                                    {"booking_date": "2026-02-10", "amount": "595.00", "counterparty": "Kunde B", "text": "Rechnung b"}))
+    pend = ok("stage", latest(f, "n"), feb)
+    fails("is in the period closed through 2026-01-31", "commit", latest(f, "n"), pend["pending"],
+          "--decisions", put(f / "feb.bad.json", paid("billpal:x", "2026-01-25")))
+    ok("commit", latest(f, "n"), pend["pending"], "--decisions", put(f / "feb.dec.json", paid("billpal:b", "2026-01-25")))
+    warns = {w["code"]: w for w in ledger.readiness(ledger.Book.load(latest(f, "n")), ledger.date(2026, 2, 28))["warnings"]}
+    assert [i.split(" (")[1] for i in warns["sales_unpaid"]["items"]] == ["billpal:c)"], warns["sales_unpaid"]
+
+    # 20 % is Austrian VAT: input VAT in a German ledger only as a cost, and a sale at it only with the OSS country
+    bill = lambda tax, account="Expenses:Software": {"schema": "journal/1", "entries": [{
+        "date": "2026-03-02", "payee": "Wien Hotel", "confirmed": "user", "user_said": "ja", "no_document": "test",
+        "lines": [{"account": "Assets:Bank:Giro", "amount": "-120.00" if account.startswith("Expenses") else "120.00"},
+                  {"account": account, "tax": {"regime": "standard", "rate": "20", "source": "user", **tax}}]}]}
+    fails("20 % is not a DE VAT rate in 2026 (19, 7)", "journal", latest(f, "n"), put(f / "at.json", bill({})))
+    fails("not a DE VAT rate", "journal", latest(f, "n"), put(f / "at-sale.json", bill({}, "Income:Sales")))
+    ok("journal", latest(f, "n"), put(f / "at-cost.json", bill({"recoverable": "0"})))
+    assert "4.9" in ledger.COUNTRY_RULES["AT"][0]["vat_rates"]
+
+    # the turn of the year: the tax office on 8 Jan and the third rent on 28 Dec are within 10 days, October is not
+    side = tmp / "n-cutoff"
+    side.mkdir()
+    shutil.copy(f / "n-v1.beancount", side / "n-v1.beancount")
+    pay = lambda d, amount, account, payee, tax=None: {
+        "date": d, "payee": payee, "confirmed": "user", "user_said": "ja", "no_document": "test",
+        "lines": [{"account": "Assets:Bank:Giro", "amount": amount}, {"account": account, **({"tax": tax} if tax else {})}]}
+    rent = lambda d: pay(d, "-800.00", "Expenses:Rent", "Miete", {"regime": "exempt", "source": "user"})
+    ok("journal", side / "n-v1.beancount", put(side / "turn.json", {"schema": "journal/1", "entries": [
+        pay("2026-01-08", "-500.00", "Liabilities:Tax-Office", "Finanzamt"),
+        rent("2026-10-28"), rent("2026-11-28"), rent("2026-12-28")]}))
+    u = ledger.Book.load(latest(side, "n"))
+    flags = {c: items for c, _, items in ledger.review_flags(u, u.live_txns())}
+    assert flags["year_end_cutoff"] == ["2026-01-08 Finanzamt -500.00", "2026-12-28 Miete -800.00"], flags["year_end_cutoff"]
+    print("book N (DE cash basis, VAT on the invoice basis, unpaid sales, VAT rates): ok")
 
 
 def main() -> int:
@@ -1904,6 +2075,8 @@ def main() -> int:
         book_j(tmp)
         book_k(tmp)
         book_l(tmp)
+        book_m(tmp)
+        book_n(tmp)
         performance(tmp)
         written = sorted({p for p in tmp.rglob("*.beancount")})
         WRITTEN.extend(written)

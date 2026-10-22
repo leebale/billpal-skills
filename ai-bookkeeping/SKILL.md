@@ -44,9 +44,9 @@ Where the folder is depends on the assistant:
 
 - **An assistant that reads and writes local files** (Claude Cowork, Claude Code, and similar): use a folder on the user's computer. This is the best setup. Users who like a browser view of their books can open the ledger in Fava (`pip install fava`, then `fava 2026-v7.beancount`); it reads the same file.
 - **A chat with code execution** (Claude, ChatGPT): files live in the sandbox only for this conversation, and Billpal does not keep the ledger file. Make sure the user downloads the newest version when a step is done, and uploads it at the start of the next chat. Say this once, clearly; do not repeat it every turn.
+- **Google Drive, Dropbox, or another storage connection:** if it can write files, save every new version to the user's books folder there as soon as the script writes it, without asking each time. Name the folder once. In a chat this replaces the download. If it can only read, use it to fetch statements and documents.
 
-End every session that wrote to the books with one line naming the file to keep, for example: "Save `2026-v7.beancount`. That file is your books."
-- **Google Drive, Dropbox, or another storage connection:** optional. If the connection can write files, save each new version there as well. If it can only read, use it to fetch statements and documents.
+End every session that wrote to the books with one line naming the file to keep, for example: "Save `2026-v7.beancount`. That file is your books." When every version is already saved to the user's storage, say where instead: "`2026-v7.beancount` is saved in Drive, `books/`."
 
 At the start of every session run `python3 ledger.py status <newest ledger>`. It shows the version, balances, staged files that were never committed, and forks. A fork means two different files claim the same parent, usually because two chats wrote to the books. Stop and ask which one to keep. The script can only see a fork when both files are in the folder.
 
@@ -59,11 +59,11 @@ At the start of every session run `python3 ledger.py status <newest ledger>`. It
 Ask, in this order, and keep it short. Skip what the user already told you. With a Billpal account, `list_workspaces` returns the workspace's `country` and `tax_id`: propose that country and let the user confirm it, and show the tax id as context. Never set `vat_status` from it; a tax id does not say whether the business is a small business.
 
 1. Business name, country, legal form (sole trader, GmbH, LLC, …), and what the business does. Then: is the business a company, with its money kept apart from the owners'? GmbH, UG, AG, FlexCo, Ltd, Inc, and an LLC taxed as a C or S corporation are: set `company` `true` (see "Companies"). An S corporation counts even though its profit is taxed with the owners. A sole trader, a partnership (OG, KG, GbR), and an LLC taxed as a sole proprietorship or partnership are not. When unsure, ask the accountant.
-2. Fiscal year (usually the calendar year; a shortened or shifted year works).
+2. Fiscal year (usually the calendar year; a shortened or shifted year works, up to 12 months). For a year that is not the calendar year, give `file_label` with both years (`2026-27`); the default label is only the year it starts in.
 3. **Basis:** cash basis (Einnahmen-Ausgaben-Rechnung, EÜR) or accrual (double-entry with customer and supplier accounts). When unsure, ask the accountant. Small sole traders in AT and DE usually use cash basis.
 4. **VAT status:** regular, small business (Kleinunternehmer), exempt, or none. If regular: VAT on the invoice or the payment basis (Soll- or Istbesteuerung), and the VAT period (month, quarter, year). Propose the basis from `countries.md` and let the user confirm it.
 5. Chart of accounts: the accountant's own (best, ask for an export), or a built-in one: `skr03`, `skr04` (DE), `oekr` (AT), `qbo` (US, QuickBooks-style). With their own chart, build the accounts from it with roles (see `input-files.md`).
-6. Bank accounts, cards, cash, and payment processors (Stripe, PayPal, SumUp) the business uses, with IBANs.
+6. Bank accounts, cards, cash, and payment processors (Stripe, PayPal, SumUp) the business uses, with IBANs. If the business takes cash from customers, ask whether it uses a till (Registrierkasse, cash register). With a till, book each day's closing report (Z-Bon, Tagesabschluss) as one `journal` entry: cash against sales, one line per VAT rate, the report as the document. Cash without a till (offene Ladenkasse in DE, which needs a daily count) is not supported: tell the user and ask the accountant. In AT a till is required from 15,000 EUR turnover a year with more than 7,500 EUR of it in cash (BAO § 131b).
 7. **Opening balances** at the start of the fiscal year: the previous year's closing balance sheet, or the account balances on the first day. A new business starts at zero (`new_business`). On accrual books, each open invoice from last year is its own opening line with its document id. If the business was VAT-registered last year, ask what VAT it still owed the tax office (or was owed) at year end, and book it as an opening line on the tax office account (`countries.md`).
 8. "Do you pay business costs privately, or use private things for the business (home office, phone, internet, car)?" If yes, set up cost shares (see "Costs shared with private life"). Mention the flat rates for the user's country from `countries.md` (for example the Arbeitsplatzpauschale in AT) and that the accountant decides between a flat rate and the actual share.
 
@@ -129,12 +129,12 @@ Pass `--documents` with the same file `candidates` read: the commit takes the pa
 
 **Confirmation.** Each booking records who decided it:
 
-- `document`: an exact match to an invoice or receipt the user keeps in Billpal or gave you, booked as the document says.
+- `document`: an exact match to an invoice or receipt the user keeps in Billpal or gave you, booked as the document says. The commit checks it against the document (pass `--documents` on cash books) and refuses anything that is not an exact match to one open document: those go into the preview.
 - `rule`: a stored rule the user set up.
 - `user`: a booking or preview group the user explicitly agreed to in this conversation. Silence, "go on", or "looks fine" to a different question is never agreement. A yes to a group confirms its derived reverse charge too.
 - `no`: everything else. It is fine to write, but blocks `check --ready` until the user confirms it.
 
-Never change `no` to `user` to make `check --ready` pass. Later confirmations go in with `journal` (`confirmations`).
+Every `user` decision, later confirmation, rule, and allocation needs `user_said`: the user's reply that agreed to it, quoted as they wrote it (for example "ja, passt so"). It is stored with the booking, and the accountant reads it. Never write words the user did not say. Never change `no` to `user` to make `check --ready` pass. Later confirmations go in with `journal` (`confirmations`).
 
 **Every booking needs a document or a reason.** Attach the invoice or receipt (`document`). If there is none by nature (bank fee, tax payment, own transfer, social insurance), give `no_document` with the reason. Anything else is a missing receipt: it is listed prominently in every readiness check and report.
 
@@ -147,14 +147,14 @@ Each line on an income, expense, or fixed-asset account carries a `tax` object (
 - Billpal stores reverse charge at the 0 % the supplier charged, or with no rate. The script fills in the user's standard rate for a purchase (derived, unconfirmed, the same as above) and keeps 0 % on a sale. Leave the line's tax off so the commit applies it; the script refuses reverse charge at 0 % on a purchase.
 - Regimes: `standard`, `reverse_charge`, `intra_community`, `import`, `exempt`, `zero`, `export`, `out_of_scope`.
 - A small business (`small_business`) charges no VAT and deducts none. The script refuses VAT on its sales.
-- Cash-basis books with VAT on the invoice basis need the invoice date as `tax.point` when it differs from the payment.
+- Cash-basis books with VAT on the invoice basis need the invoice date as `tax.point` when it differs from the payment. Pass `--documents` to `candidates`, so the unpaid sales invoices are listed (see Matching).
 - A purchase with a private share: book the business share with its VAT, the private share to `Equity:Private` without VAT. For costs that come back every month, use a cost share (next section).
 - A business cost the tax law deducts only in part (US business meals 50 %, DE Bewirtung 70 %): give the line `deductible` (`"0.5"`, `"0.7"`). The script books that share on the account and the rest on its `:Nondeductible` sub-account (open it first; the SKR and QBO charts have `Expenses:Meals:Nondeductible`). The VAT stays whole. This is not a private share: the whole cost is the business's. A rule can carry `deductible` too.
-- When you do not know the treatment, ask. Do not guess a rate.
+- When you do not know the treatment, ask. Do not guess a rate. In AT and DE the script refuses a rate the country does not have that year. Foreign VAT on a bill (a hotel abroad) is not input VAT: book it with `recoverable` `"0"`, so it stays part of the cost.
 
 ### Common traps
 
-- **Own transfers** between the business's accounts (bank to savings, bank to card, ATM to cash): book both sides through the clearing account (`Assets:Transit`), never as income or expense. When both statements arrive, each side books against the clearing account, and it returns to zero.
+- **Own transfers** between the business's accounts (bank to savings, bank to card, ATM to cash): book both sides through the clearing account (`Assets:Transit`), never as income or expense. When both statements arrive, each side books against the clearing account, and it returns to zero. Money left there for more than 10 days blocks "ready": ask which account received it, and import that account's statement.
 - **Card settlements:** the bank row is a transfer to the card account. The purchases are on the card statement.
 - **Processor payouts** (Stripe, PayPal): the payout is a transfer. The sales and fees are booked from the processor's report.
 - **Tax office payments** (Abgabenkonto in AT, Finanzamt in DE): split by what they pay. VAT settles the VAT liability; a sole trader's income tax is private; a company's corporate income tax is its own (`countries.md`).
@@ -204,6 +204,8 @@ python3 ledger.py candidates <ledger> statement.pending.json
 
 Each line of a payment on a Personenkonto carries `allocations`: which documents it pays, and how much of each. Open items, partial payments, and aging all come from allocations. A payment that is not allocated yet can be booked with `document` `null` and allocated later with a `journal` entry; until then the period is not ready.
 
+**A customer invoice that will not be paid** (insolvency, a final refusal) is written off only on the user's word, and the accountant decides when. Book it with `journal`: the Personenkonto line with the open amount and `allocations` to the document, against `Expenses:Bad-Debts` (open it if the chart has none) with the invoice's tax treatment and `direction` `sale`. That reverses the output VAT (DE UStG § 17, AT UStG 1994 § 16). On cash basis there is nothing to write off, because the sale was never booked.
+
 ## Matching payments to documents
 
 `candidates` shortlists documents for each staged row: the date window fits (a receipt within 7 days, an invoice from 14 days before its date to 42 days after it is due), the direction fits, and something besides the amount links them (the legal or brand name, the IBAN, or the document number in the payment text). An amount alone is never a match.
@@ -227,6 +229,8 @@ An `exact` match without `needs_user` is booked as the document says (`confirmed
 
 On cash-basis books, pass the user's documents with `--documents documents.json` to attach receipts and invoices to bank rows. Documents still in review are never offered; they are listed under `held_in_review`, saved in the pending file, and recorded by `commit`. Readiness blocks that period until they are resolved and booked. A document in another currency without `fx_rate` is matched only on the original amount of a row; give `fx_rate` to match it against euro amounts.
 
+`sales_without_payment` (cash basis with VAT on the invoice basis, usual in DE) lists the sales invoices and credit notes up to the statement's end that are not booked yet, with their VAT. Their VAT is due for the invoice's period even before the customer pays, and the ledger only sees the payment. `commit` records them; readiness lists the ones still unpaid (`sales_unpaid`) so the accountant adds their VAT to that period's return. When one is paid after its period is closed, book the payment with the invoice date as `tax.point`, as usual: the script allows it because the invoice was listed before the close.
+
 `documents_without_payment` lists cost documents dated inside the statements' period that no row pays (cash basis). Ask the user about each one. Paid privately: book it on its date against `Equity:Private` (a private contribution) with `journal`, with the document attached and the tax from the document. Paid from another account: that account's statement is missing. Not paid yet: it is booked when the payment comes. Not sure: leave it. It may be paid on a statement not imported yet, so book a private payment only once the user says so, or once every account's statements for the period are matched; otherwise the bank payment books the cost a second time.
 
 ## Assets and depreciation
@@ -241,6 +245,15 @@ python3 ledger.py depreciate <ledger> --write    # after the user confirms
 ```
 
 Charts with an accumulated-depreciation account (QBO) book it there; the others book directly against the asset. A private share goes to `Equity:Private`.
+
+**An asset that leaves** (sold, scrapped, stolen):
+
+1. Store its record again with `disposed`, the date it left. Depreciation then runs to that date.
+2. Run `depreciate` (preview). `book_value_end` is the book value left.
+3. Book that value off with `journal` on the disposal date: the asset account (with `asset` set) against an account for disposed assets, both `out_of_scope`. Open `Expenses:Asset-Disposal` if the chart has none, and ask the accountant for its number. On charts with an accumulated-depreciation account, credit the asset account with the full cost and debit the accumulated account with everything depreciated, this year included.
+4. `depreciate --write` as usual.
+
+A sale price is booked like any sale: the payment to an income account for asset sales (open `Income:Asset-Sales`), with VAT. Taking an asset into private use is a sale to the owner for VAT: ask the accountant.
 
 ## Corrections
 
@@ -263,6 +276,7 @@ It fails, with the items to fix, when anything up to that date is:
 - an unconfirmed booking or tax treatment;
 - a month with no statement for an account in use, or a broken statement chain;
 - money on the suspense account, including an opening difference the user agreed to park;
+- money on the clearing account (`Assets:Transit`) for more than 10 days: one side of a transfer is missing;
 - an unallocated payment (accrual books);
 - a document still in Billpal Review, booked or held;
 - a staged file never committed, or a fork;
@@ -282,6 +296,8 @@ And it warns, without failing, about what an accountant would ask:
 - `price_increase`: a recurring payment that went up after two equal payments (the latest increase per payee).
 - `above_asset_limit`: an expense on an equipment-like account above the country's limit for low-value assets (GWG; in the US the $2,500 de minimis safe harbor). If it lasts several years, it is an asset.
 - `contractors_1099` (US): contractors paid $2,000 or more in 2026 ($600 before) by bank transfer or check. Ask for a W-9 now; the CPA files the 1099-NEC by January 31. Card and PayPal payments are not on it.
+- `year_end_cutoff` (AT, DE, cash basis): tax office payments and recurring payments within 15 (AT) or 10 (DE) days of the turn of the year. They may count in the year they are for, not the year paid. The accountant decides; do not move them yourself.
+- `sales_unpaid` (cash basis, VAT on the invoice basis): sales invoices not paid yet, with the VAT the accountant adds to the return for their period.
 - `vat_payments` (AT, DE): the VAT due by that date, last year's balance included, against the payments to the tax office (`Liabilities:Tax-Office`, or a payment booked straight on a VAT account). A gap usually means a payment booked elsewhere, or costs paid from an account whose statements are missing.
 - `open_questions`: questions stored in the ledger that are still open (next section).
 
@@ -299,7 +315,7 @@ When the check passes, say "ready for your accountant" (in German: „fertig fü
 2. `check --ready --year-end` until it passes, with `close-period --through <last day of the year>` along the way.
 3. `python3 ledger.py rollover <ledger>` (preview), then with `--write`. This opens the next year's file: balance-sheet accounts carry over, open invoices carry over one by one, and the year's result and private account go to the equity account. The preview shows the year's profit (`result`) and the private withdrawals (`draws`) apart.
 
-The new file starts at version 1 and points back to the old one.
+The new file starts at version 1 and points back to the old one. The next year runs 12 months; give `--label` for a shifted year (`2027-28`). To move to a different fiscal year, the accountant usually sets a short year first (Rumpfwirtschaftsjahr): `rollover --to <its last day>`, and the rollover after it runs 12 months from there. The fiscal year of an existing file cannot be changed: a wrong one means starting over from a new `init`.
 
 ## Reports
 
@@ -321,9 +337,11 @@ This writes `report.html` (one self-contained file), CSV files, and `report-data
 
 The first report is the dashboard: give the user `report.html`, where they open an account, then a payee, then the single bookings. Balance accounts and VAT periods open down to their bookings too, and a search finds any booking by party, text, amount, or account. A full-year report without `--by` shows the quarters. A booking with a Billpal document links to it. Sections with nothing in them are left out.
 
+When the user wants their own logo in the report, pass it with `--logo <file>` (PNG, JPEG or WebP, up to 300 KB). It replaces the Billpal logo and stays inside the file. Bookings converted from another currency show the original amount under the booked one.
+
 German reports (`--lang de`, the default for a German-language profile) use a semicolon and a decimal comma in the CSV, so Excel opens them correctly.
 
-- **Files are the default:** give the user `report.html` and the CSVs. After later sessions that changed bookings, give a short summary in the chat and the updated `report.html`.
+- **Files are the default:** give the user `report.html` and the CSVs. Give the `report.html` that `report` wrote into the output folder, as it is: never the template next to `ledger.py`, and never a report you built, restyled, or rewrote yourself. After later sessions that changed bookings, give a short summary in the chat and the updated `report.html`.
 - **An artifact** (Claude) only when the user asks for one. Build it from `report-data.json` only, and never type numbers in yourself. Tell the user once that the books are sensitive: do not share or publish the artifact's link.
 
 Lead your summary with the outcome: the period, whether it is ready, the result, VAT payable or refundable, and how many receipts are missing. While anything is open (unconfirmed bookings, suspense, missing statements), call the result and the VAT provisional.
@@ -384,11 +402,12 @@ Without a Billpal account, the user gives you the documents as files, and you re
 - Payroll: import the payroll provider's journal as a `journal` entry, never calculate wages.
 - Inventory, consolidation, investments and securities, and ledgers in more than one currency.
 - Automatic period-end accruals, deferrals, and provisions. Book them as `journal` entries when the accountant gives them.
+- VAT on private use (unentgeltliche Wertabgabe, Eigenverbrauch), for example a car kept fully in the business and used privately. Cost shares (see "Costs shared with private life") cover costs split by a fixed share; the rest is the accountant's, booked as a `journal` entry when they give it.
 - Reminders as bookings. A reminder fee is booked only when the user confirms it separately.
 
 ## Before you commit
 
-- The preview was shown, and the user explicitly agreed to everything marked `confirmed` `user`, including the reverse-charge line.
+- The preview was shown, and the user explicitly agreed to everything marked `confirmed` `user`, including the reverse-charge line. Each carries their words in `user_said`.
 - Every line on income, expenses, or assets has a tax treatment, or is left for the commit to derive from a document without VAT, and you guessed none of them.
 - Every booking has a document or a `no_document` reason.
 - Own transfers go through the clearing account.
@@ -422,7 +441,7 @@ All commands print JSON: `{"ok": true, ...}`, or `{"ok": false, "errors": [...]}
 | `close-period LEDGER --through DATE` | Lock bookings up to a date |
 | `depreciate LEDGER [--write]` | The year's depreciation |
 | `rollover LEDGER [--to DATE --label NAME] [--write]` | Open the next fiscal year |
-| `report LEDGER --out-dir DIR [--from --to --by month\|quarter --lang de\|en --format html,csv,json]` | Reports |
+| `report LEDGER --out-dir DIR [--from --to --by month\|quarter --lang de\|en --format html,csv,json --logo FILE]` | Reports |
 | `export LEDGER --format datev\|bmd\|dvo\|qbo-journal\|xero-journal --out-dir DIR [--from --to --consultant --client --gl-length --tax-rate --clearing-code]` | Import file for the accountant's software |
 | `writeback LEDGER [--documents FILE]` | Billpal payment updates for booked payments |
 
