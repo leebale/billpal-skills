@@ -158,14 +158,19 @@ def build_xml(data: dict, check_totals: bool = True) -> str:
     tax_cents = require_int(data, "tax_cents")
     grand_cents = require_int(data, "grand_total_cents")
     due_cents = require_int(data, "due_cents")
+    paid_cents = data.get("paid_cents") or 0
+    if isinstance(paid_cents, bool) or not isinstance(paid_cents, int) or paid_cents < 0:
+        fail("paid_cents must be a whole number of cents, 0 or more")
     if check_totals:
         expected_tax = int((Decimal(net_cents) * Decimal(str(rate)) / 100).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
         if tax_cents != expected_tax:
             fail(f"tax_cents must be {expected_tax} (net {net_cents} at {rate_text}%)")
         if grand_cents != net_cents + tax_cents:
             fail(f"grand_total_cents must be {net_cents + tax_cents}")
-        if due_cents != grand_cents:
-            fail(f"due_cents must be {grand_cents}")
+        if paid_cents > grand_cents:
+            fail(f"paid_cents cannot be more than grand_total_cents ({grand_cents})")
+        if due_cents != grand_cents - paid_cents:
+            fail(f"due_cents must be {grand_cents - paid_cents} (grand total minus paid_cents)")
     currency = require_str(data, "currency")
     issued = date_102(require_str(data, "issue_date"), "issue_date")
     delivery_date = optional_str(data, "delivery_date")
@@ -273,6 +278,7 @@ def build_xml(data: dict, check_totals: bool = True) -> str:
         f"<ram:TaxBasisTotalAmount>{cents_text(net_cents)}</ram:TaxBasisTotalAmount>"
         f"<ram:TaxTotalAmount currencyID=\"{xml_text(currency)}\">{cents_text(tax_cents)}</ram:TaxTotalAmount>"
         f"<ram:GrandTotalAmount>{cents_text(grand_cents)}</ram:GrandTotalAmount>"
+        f"{f'<ram:TotalPrepaidAmount>{cents_text(paid_cents)}</ram:TotalPrepaidAmount>' if paid_cents else ''}"
         f"<ram:DuePayableAmount>{cents_text(due_cents)}</ram:DuePayableAmount>"
         "</ram:SpecifiedTradeSettlementHeaderMonetarySummation>"
         "</ram:ApplicableHeaderTradeSettlement>"

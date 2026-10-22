@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Accept good PDFs (S, E, AE, K, a French seller, a service period) and reject a bad one against the deployed checker."""
+"""Accept good PDFs (S, E, AE, K, a French seller, a service period, already paid) and reject a bad one against the deployed checker."""
 
 from __future__ import annotations
 
@@ -108,6 +108,7 @@ GOOD = {
         "due_cents": 12000,
     },
     "period": {**base(), "period_start": "2024-01-01", "period_end": "2024-01-08"},
+    "paid": {**base(), "paid_cents": 11900, "due_cents": 0},
 }
 
 REFUSED = {
@@ -115,6 +116,8 @@ REFUSED = {
     "text_rate": ({**base(), "tax_rate_percent": "19"}, "must be a number"),
     "half_period": ({**base(), "period_start": "2024-01-01"}, "go together"),
     "backwards_period": ({**base(), "period_start": "2024-01-08", "period_end": "2024-01-01"}, "before period_start"),
+    "paid_still_due": ({**base(), "paid_cents": 11900}, "due_cents must be 0"),
+    "overpaid": ({**base(), "paid_cents": 20000, "due_cents": 0}, "cannot be more than"),
 }
 
 

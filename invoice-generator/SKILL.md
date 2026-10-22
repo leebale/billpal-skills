@@ -47,6 +47,8 @@ In the EU, these come from the VAT Directive (Art. 226) and the national VAT law
 - Quantity and a description of each item or service.
 - Net amount per tax rate, the tax rate, and the tax amount. Or the exemption wording (small-business exemption, reverse charge, intra-community supply). Then the gross total.
 
+If the user says the client has already paid, it is still an invoice. Keep the title. Ask for the payment date and method if they were not given, show them in the payment block with the amount paid, and show the amount due as the total minus what was paid (0 when paid in full). When it is paid in full, drop any line asking for payment or a due date.
+
 Outside the EU, ask the user what their country requires and write that. Do not claim the invoice meets a law you were not told about.
 
 ## Where the layout comes from
@@ -124,6 +126,8 @@ Confirm every value before it lands on the invoice.
 The invoice is complete without this step. Offer it once, in one sentence, when the buyer is a business in Germany, where e-invoices are increasingly expected. Do it when the user asks for ZUGFeRD, Factur-X, or an e-invoice. If they say no, do not ask again. The check uploads the file to billpal.io, so ask for that in the same message.
 
 For the e-invoice, read `e-invoice.md` in this skill folder and follow it. It needs the finished invoice PDF, code execution, and a seller in an EU country.
+
+The e-invoice is a PDF with valid EN 16931 XML embedded. It is not a certified ZUGFeRD / Factur-X PDF/A-3 file, and the PDF wrapper is not checked. Do not claim more than that. `e-invoice.md` has the exact wording.
 
 ## Before you deliver
 

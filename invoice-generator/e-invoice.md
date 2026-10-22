@@ -1,6 +1,15 @@
 # E-invoice step (optional)
 
-Read this only when the user wants the invoice as an e-invoice. It turns the invoice PDF into one ZUGFeRD / Factur-X PDF: the same pages, with the EN 16931 XML attached. Answer in the user's language.
+Read this only when the user wants the invoice as an e-invoice. It turns the invoice PDF into one PDF with the EN 16931 invoice XML embedded as `factur-x.xml`: the same pages, with the XML attached. Answer in the user's language.
+
+## What this does and does not do
+
+- Does: embeds valid EN 16931 XML in the PDF, and the check below validates that XML.
+- Does not: convert the PDF to PDF/A-3, embed fonts, add a colour profile, or validate the PDF wrapper.
+- The result is not a certified ZUGFeRD / Factur-X PDF/A-3 file. Never call it "PDF/A-3", "ZUGFeRD-compliant", "archival", or "legally compliant". The only claim you may make is that the invoice data passed the EN 16931 check.
+- If the user asks whether it is PDF/A-3, answer no. Do not try to convert it (no Ghostscript, no LibreOffice PDF/A export). Attaching the XML replaces the PDF's XMP metadata anyway, so a conversion before it would be undone.
+- If the user's own PDF is already PDF/A, tell them that attaching the XML removes that claim.
+- If the buyer is a public-sector body, a French portal, or an archiving system, tell the user that strict validators may reject the PDF wrapper. They can test it with veraPDF or Mustang, or use https://billpal.io/einvoice-check.
 
 This is an EN 16931 invoice, guideline `urn:cen.eu:en16931:2017`, type code 380. The seller is in an EU country. No XRechnung, no credit note, no allowances.
 
@@ -24,6 +33,8 @@ If `python3` cannot run even with the files, stop. Say that no e-invoice was mad
 2. The same details as on that PDF: the seller, the buyer, the invoice number, the date, and the lines. Amounts are integer cents. Pass `tax_cents`, `grand_total_cents`, and `due_cents` as printed on the PDF. The script checks them against the lines and the rate and says the right value if one is off. If the PDF is wrong, fix the PDF too.
 
 `seller_country` and `buyer_country` are two-letter codes. The seller country must be an EU country. The seller needs `seller_vat_id`, or `seller_tax_number` (the national tax number, Steuernummer in Germany) if they have no VAT id. Optional: `due_date`, `payment_terms`, and either `delivery_date` or a service period as `period_start` and `period_end`. Dates are YYYY-MM-DD. Use the same service date or period as the PDF.
+
+If the client has already paid, set `paid_cents` to the amount received and `due_cents` to the grand total minus that amount (0 when paid in full). The type code stays 380. The XML has no field for the payment date or method, so those stay on the PDF only.
 
 One tax category per invoice:
 
@@ -84,11 +95,11 @@ The check uploads the whole e-invoice to billpal.io, including the buyer, the ta
 
 POST `e-invoice.pdf` to `https://billpal.io/api/einvoice/check` with `Content-Type: application/pdf`. No account is required. Files up to 4 MB.
 
-- `accept: true` means the EN 16931 XML passed. Tell the user that. Also say PDF/A-3 was not checked.
+- `accept: true` means the EN 16931 XML passed. Say this sentence, translated to the user's language, and do not drop the second half: "The invoice data passed the EN 16931 check. The PDF wrapper (PDF/A-3) was not checked."
 - `accept: false` means it failed. Show the rule ids and the English texts from the response. Fix the JSON and run `generate.py` again. Do not hand over a rejected file as a finished e-invoice.
 - `accept: null` means no matching profile. Do not call it valid.
 
-If the POST fails (no network, a timeout, or any other error), do not call the file valid. Hand over the PDF and say the check did not run. Give this link: https://billpal.io/einvoice-check
+If the POST fails (no network, a timeout, or any other error), do not call the file valid. Hand over the PDF and say: "The check did not run, so I can't confirm it is valid." Give this link: https://billpal.io/einvoice-check
 
 If the sandbox cannot reach billpal.io, tell the user how to allow it, as described under "Host limits" in `SKILL.md`, or give the link above.
 
