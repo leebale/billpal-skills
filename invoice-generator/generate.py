@@ -20,6 +20,7 @@ from pypdf.generic import (  # noqa: E402
 )
 
 GUIDELINE = "urn:cen.eu:en16931:2017"
+XRECHNUNG_GUIDELINE = "urn:cen.eu:en16931:2017#compliant#urn:xeinkauf.de:kosit:xrechnung_3.0"
 ATTACHMENT = "factur-x.xml"
 # ISO 3166 codes, so Greece is GR here even though its VAT ids start with EL.
 EU_COUNTRIES = {
@@ -78,7 +79,7 @@ def tax_registrations(vat_id: str | None, tax_number: str | None) -> str:
     return out
 
 
-def build_xml(data: dict, check_totals: bool = True) -> str:
+def build_xml(data: dict, check_totals: bool = True, profile: str = "facturx") -> str:
     seller_country = require_str(data, "seller_country")
     if seller_country not in EU_COUNTRIES:
         fail("seller_country must be an EU country code")
@@ -214,6 +215,49 @@ def build_xml(data: dict, check_totals: bool = True) -> str:
         ship_to = optional_str(data, "deliver_to_country") or buyer_country
         ship_to_xml = f"<ram:ShipToTradeParty><ram:PostalTradeAddress><ram:CountryID>{xml_text(ship_to)}</ram:CountryID></ram:PostalTradeAddress></ram:ShipToTradeParty>"
     header_exemption = f"<ram:ExemptionReason>{xml_text(exemption)}</ram:ExemptionReason>" if exemption else ""
+    if profile not in {"facturx", "xrechnung"}:
+        fail("profile must be facturx or xrechnung")
+    guideline = GUIDELINE
+    buyer_reference_xml = ""
+    seller_contact_xml = ""
+    seller_electronic_xml = ""
+    buyer_electronic_xml = ""
+    payment_means_xml = ""
+    if profile == "xrechnung":
+        guideline = XRECHNUNG_GUIDELINE
+        buyer_reference_xml = f"<ram:BuyerReference>{xml_text(require_str(data, 'buyer_reference'))}</ram:BuyerReference>"
+        seller_contact_xml = (
+            "<ram:DefinedTradeContact>"
+            f"<ram:PersonName>{xml_text(require_str(data, 'seller_contact_name'))}</ram:PersonName>"
+            "<ram:TelephoneUniversalCommunication>"
+            f"<ram:CompleteNumber>{xml_text(require_str(data, 'seller_phone'))}</ram:CompleteNumber>"
+            "</ram:TelephoneUniversalCommunication>"
+            "<ram:EmailURIUniversalCommunication>"
+            f"<ram:URIID>{xml_text(require_str(data, 'seller_email'))}</ram:URIID>"
+            "</ram:EmailURIUniversalCommunication>"
+            "</ram:DefinedTradeContact>"
+        )
+        seller_electronic_xml = (
+            "<ram:URIUniversalCommunication>"
+            f"<ram:URIID schemeID=\"EM\">{xml_text(require_str(data, 'seller_electronic_address'))}</ram:URIID>"
+            "</ram:URIUniversalCommunication>"
+        )
+        buyer_electronic_xml = (
+            "<ram:URIUniversalCommunication>"
+            f"<ram:URIID schemeID=\"EM\">{xml_text(require_str(data, 'buyer_electronic_address'))}</ram:URIID>"
+            "</ram:URIUniversalCommunication>"
+        )
+        payment_means_xml = (
+            "<ram:SpecifiedTradeSettlementPaymentMeans>"
+            "<ram:TypeCode>58</ram:TypeCode>"
+            "<ram:PayeePartyCreditorFinancialAccount>"
+            f"<ram:IBANID>{xml_text(require_str(data, 'iban'))}</ram:IBANID>"
+            "</ram:PayeePartyCreditorFinancialAccount>"
+            "<ram:PayeeSpecifiedCreditorFinancialInstitution>"
+            f"<ram:BICID>{xml_text(require_str(data, 'bic'))}</ram:BICID>"
+            "</ram:PayeeSpecifiedCreditorFinancialInstitution>"
+            "</ram:SpecifiedTradeSettlementPaymentMeans>"
+        )
 
     return (
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
@@ -223,7 +267,7 @@ def build_xml(data: dict, check_totals: bool = True) -> str:
         " xmlns:udt=\"urn:un:unece:uncefact:data:standard:UnqualifiedDataType:100\">"
         "<rsm:ExchangedDocumentContext>"
         "<ram:GuidelineSpecifiedDocumentContextParameter>"
-        f"<ram:ID>{GUIDELINE}</ram:ID>"
+        f"<ram:ID>{guideline}</ram:ID>"
         "</ram:GuidelineSpecifiedDocumentContextParameter>"
         "</rsm:ExchangedDocumentContext>"
         "<rsm:ExchangedDocument>"
@@ -234,16 +278,19 @@ def build_xml(data: dict, check_totals: bool = True) -> str:
         "<rsm:SupplyChainTradeTransaction>"
         + "".join(line_xml)
         + "<ram:ApplicableHeaderTradeAgreement>"
+        f"{buyer_reference_xml}"
         "<ram:SellerTradeParty>"
         # BR-CO-26: without a VAT id the seller needs an identifier, so the tax number doubles as one.
         + (f"<ram:ID>{xml_text(seller_tax_number)}</ram:ID>" if not seller_vat else "")
         + f"<ram:Name>{xml_text(require_str(data, 'seller_name'))}</ram:Name>"
+        f"{seller_contact_xml}"
         "<ram:PostalTradeAddress>"
         f"<ram:PostcodeCode>{xml_text(require_str(data, 'seller_postcode'))}</ram:PostcodeCode>"
         f"<ram:LineOne>{xml_text(require_str(data, 'seller_street'))}</ram:LineOne>"
         f"<ram:CityName>{xml_text(require_str(data, 'seller_city'))}</ram:CityName>"
         f"<ram:CountryID>{seller_country}</ram:CountryID>"
         "</ram:PostalTradeAddress>"
+        f"{seller_electronic_xml}"
         f"{tax_registrations(seller_vat, seller_tax_number)}"
         "</ram:SellerTradeParty>"
         "<ram:BuyerTradeParty>"
@@ -254,6 +301,7 @@ def build_xml(data: dict, check_totals: bool = True) -> str:
         f"<ram:CityName>{xml_text(require_str(data, 'buyer_city'))}</ram:CityName>"
         f"<ram:CountryID>{xml_text(buyer_country)}</ram:CountryID>"
         "</ram:PostalTradeAddress>"
+        f"{buyer_electronic_xml}"
         f"{tax_registrations(buyer_vat, None)}"
         "</ram:BuyerTradeParty>"
         "</ram:ApplicableHeaderTradeAgreement>"
@@ -263,6 +311,7 @@ def build_xml(data: dict, check_totals: bool = True) -> str:
         "</ram:ApplicableHeaderTradeDelivery>"
         "<ram:ApplicableHeaderTradeSettlement>"
         f"<ram:InvoiceCurrencyCode>{xml_text(currency)}</ram:InvoiceCurrencyCode>"
+        f"{payment_means_xml}"
         "<ram:ApplicableTradeTax>"
         f"<ram:CalculatedAmount>{cents_text(tax_cents)}</ram:CalculatedAmount>"
         "<ram:TypeCode>VAT</ram:TypeCode>"
@@ -333,8 +382,20 @@ def write_pdf(source: Path, xml: str, output: Path) -> None:
 
 
 def main() -> None:
+    if len(sys.argv) == 3 and sys.argv[2].lower().endswith(".xml"):
+        source = Path(sys.argv[1])
+        output = Path(sys.argv[2])
+        try:
+            data = json.loads(source.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            fail(f"could not read invoice json: {error}")
+        if not isinstance(data, dict):
+            fail("invoice json must be an object")
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(build_xml(data, profile="xrechnung"), encoding="utf-8")
+        return
     if len(sys.argv) != 4:
-        fail("usage: python3 generate.py invoice.json invoice.pdf e-invoice.pdf")
+        fail("usage: python3 generate.py invoice.json invoice.pdf e-invoice.pdf\n       python3 generate.py invoice.json xrechnung.xml")
     source = Path(sys.argv[1])
     visual = Path(sys.argv[2])
     output = Path(sys.argv[3])

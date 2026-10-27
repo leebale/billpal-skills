@@ -20,12 +20,12 @@ import generate  # noqa: E402
 from pypdf import PdfWriter  # noqa: E402  (vendor/ is on the path via generate)
 
 
-def post(pdf: Path) -> dict:
+def post(pdf: Path, content_type: str = "application/pdf") -> dict:
     request = urllib.request.Request(
         URL,
         data=pdf.read_bytes(),
         method="POST",
-        headers={"Content-Type": "application/pdf"},
+        headers={"Content-Type": content_type},
     )
     try:
         with urllib.request.urlopen(request, timeout=30) as response:
@@ -165,6 +165,28 @@ def main() -> None:
             raise SystemExit(1)
         if not [error.get("id") for error in bad.get("errors") or []]:
             print(f"reject listed no rules: {bad}", file=sys.stderr)
+            raise SystemExit(1)
+
+        xrechnung = {
+            **base(),
+            "buyer_reference": "04011000-1234512345-06",
+            "seller_contact_name": "Ada Admin",
+            "seller_phone": "+4930123456",
+            "seller_email": "billing@seller.example",
+            "seller_electronic_address": "billing@seller.example",
+            "buyer_electronic_address": "ap@buyer.example",
+            "iban": "DE02120300000000202051",
+            "bic": "BYLADEM1001",
+        }
+        xml_path = folder / "xrechnung.xml"
+        xml_path.write_text(generate.build_xml(xrechnung, profile="xrechnung"), encoding="utf-8")
+        xresult = post(xml_path, "application/xml")
+        if xresult.get("accept") is True:
+            print("xrechnung sample passed the live checker")
+        elif xresult.get("accept") is None:
+            print("xrechnung sample was not accepted: the checker has no matching profile, so this is not a pass")
+        else:
+            print(f"xrechnung: expected accept or a missing profile, got {xresult}", file=sys.stderr)
             raise SystemExit(1)
     print("e-invoice check passed")
 

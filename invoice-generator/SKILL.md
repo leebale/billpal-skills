@@ -123,7 +123,7 @@ Confirm every value before it lands on the invoice.
 
 ## E-invoice (optional)
 
-The invoice is complete without this step. Offer it once, in one sentence, when the buyer is a business in Germany, where e-invoices are increasingly expected. Do it when the user asks for ZUGFeRD, Factur-X, or an e-invoice. If they say no, do not ask again. The check uploads the file to billpal.io, so ask for that in the same message.
+The invoice is complete without this step. Offer ZUGFeRD once, in one sentence, when the buyer is a business in Germany. Offer a standalone XRechnung when the buyer is a German public body, or when they ask for XRechnung. Do it when the user asks for ZUGFeRD, Factur-X, XRechnung, or an e-invoice. If they say no, do not ask again. The check uploads the file to billpal.io, so ask for that in the same message.
 
 For the e-invoice, read `e-invoice.md` in this skill folder and follow it. It needs the finished invoice PDF, code execution, and a seller in an EU country.
 

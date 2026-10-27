@@ -11,7 +11,14 @@ Read this only when the user wants the invoice as an e-invoice. It turns the inv
 - If the user's own PDF is already PDF/A, tell them that attaching the XML removes that claim.
 - If the buyer is a public-sector body, a French portal, or an archiving system, tell the user that strict validators may reject the PDF wrapper. They can test it with veraPDF or Mustang, or use https://billpal.io/einvoice-check.
 
-This is an EN 16931 invoice, guideline `urn:cen.eu:en16931:2017`, type code 380. The seller is in an EU country. No XRechnung, no credit note, no allowances.
+This is an EN 16931 invoice, type code 380. The seller is in an EU country. No credit note, no allowances.
+
+Two outputs:
+
+- ZUGFeRD / Factur-X: the PDF with `factur-x.xml` embedded. Guideline `urn:cen.eu:en16931:2017`. Use this when the buyer is a business and wants a PDF they can open.
+- XRechnung: a standalone CII XML file, no PDF. Guideline `urn:cen.eu:en16931:2017#compliant#urn:xeinkauf.de:kosit:xrechnung_3.0`. Use this when the buyer is a German public body, or they asked for XRechnung or a Leitweg-ID. Do not call a ZUGFeRD PDF an XRechnung.
+
+A known-good XRechnung sample has not been confirmed on the live checker yet. Do not tell the user the XRechnung file was checked until `check.py` prints that the sample passed.
 
 If the seller is not in the EU, say that no e-invoice can be made yet and deliver the normal invoice. It is complete without the e-invoice.
 
@@ -81,10 +88,21 @@ Write a JSON file. Amounts and the rate are numbers, not text. This one is 7 hou
 
 `quantity` is text so that "1.5" stays exact. `unit` is a UN/ECE code: `HUR` for hours, `DAY` for days, `C62` (the default) for pieces.
 
-Then run:
+Then run, for the PDF with embedded XML:
 
 ```bash
 python3 generate.py invoice.json invoice.pdf e-invoice.pdf
+```
+
+For a standalone XRechnung, add these fields. The model fills the JSON. The script writes the XML.
+
+- `buyer_reference`: the Leitweg-ID. When the buyer is a business and has no Leitweg-ID, use the order number or the reference the buyer asked you to put on the invoice. Do not invent one.
+- `seller_contact_name`, `seller_phone`, `seller_email`
+- `seller_electronic_address` and `buyer_electronic_address`: email addresses
+- `iban` and `bic`
+
+```bash
+python3 generate.py invoice.json xrechnung.xml
 ```
 
 If the script exits with an error, fix the JSON and run it again. Do not patch the PDF or the XML.
@@ -93,7 +111,7 @@ If the script exits with an error, fix the JSON and run it again. Do not patch t
 
 The check uploads the whole e-invoice to billpal.io, including the buyer, the tax ids, and the bank details. Ask before the upload, in the same message where you offer the e-invoice. If the user says no, hand over the file, say it was not checked, and give the link below.
 
-POST `e-invoice.pdf` to `https://billpal.io/api/einvoice/check` with `Content-Type: application/pdf`. No account is required. Files up to 4 MB.
+POST `e-invoice.pdf` to `https://billpal.io/api/einvoice/check` with `Content-Type: application/pdf`. POST `xrechnung.xml` to the same URL with `Content-Type: application/xml`. No account is required. PDF files up to 4 MB. XML files up to 2 MB on this public check.
 
 - `accept: true` means the EN 16931 XML passed. Say this sentence, translated to the user's language, and do not drop the second half: "The invoice data passed the EN 16931 check. The PDF wrapper (PDF/A-3) was not checked."
 - `accept: false` means it failed. Show the rule ids and the English texts from the response. Fix the JSON and run `generate.py` again. Do not hand over a rejected file as a finished e-invoice.
