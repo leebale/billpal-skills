@@ -8,6 +8,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -20,6 +21,38 @@ import generate  # noqa: E402
 from pypdf import PdfWriter  # noqa: E402  (vendor/ is on the path via generate)
 
 
+# 429/503 are the live route's rate limit and "limiter down" responses.
+# A publish posts 9 files from one shared runner IP, which can already be at the cap.
+RETRY_STATUS = {429, 503}
+MAX_ATTEMPTS = 4
+MAX_WAIT_SECONDS = 660
+
+
+def wait_seconds(error: urllib.error.HTTPError) -> int:
+    raw = error.headers.get("Retry-After") if error.headers else None
+    try:
+        seconds = int(str(raw).strip())
+    except (TypeError, ValueError):
+        seconds = 60
+    return min(max(seconds, 1), MAX_WAIT_SECONDS)
+
+
+def _check_wait_seconds() -> None:
+    from email.message import EmailMessage
+
+    def err(value: str | None) -> urllib.error.HTTPError:
+        headers = EmailMessage()
+        if value is not None:
+            headers["Retry-After"] = value
+        return urllib.error.HTTPError("https://example.test", 429, "rate", headers, None)
+
+    assert wait_seconds(err("12")) == 12
+    assert wait_seconds(err(None)) == 60
+    assert wait_seconds(err("nope")) == 60
+    assert wait_seconds(err("0")) == 1
+    assert wait_seconds(err("99999")) == MAX_WAIT_SECONDS
+
+
 def post(pdf: Path, content_type: str = "application/pdf") -> dict:
     request = urllib.request.Request(
         URL,
@@ -27,21 +60,29 @@ def post(pdf: Path, content_type: str = "application/pdf") -> dict:
         method="POST",
         headers={"Content-Type": content_type},
     )
-    try:
-        with urllib.request.urlopen(request, timeout=30) as response:
-            body = response.read().decode("utf-8")
-            status = response.status
-    except urllib.error.HTTPError as error:
-        body = error.read().decode("utf-8", "replace")
-        print(f"checker HTTP {error.code}: {body[:300]}", file=sys.stderr)
-        raise SystemExit(1) from error
-    except urllib.error.URLError as error:
-        print(f"checker unreachable: {error.reason}", file=sys.stderr)
-        raise SystemExit(1) from error
-    if status != 200:
-        print(f"checker HTTP {status}: {body[:300]}", file=sys.stderr)
-        raise SystemExit(1)
-    return json.loads(body)
+    for attempt in range(1, MAX_ATTEMPTS + 1):
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                body = response.read().decode("utf-8")
+                status = response.status
+        except urllib.error.HTTPError as error:
+            if error.code in RETRY_STATUS and attempt < MAX_ATTEMPTS:
+                delay = wait_seconds(error)
+                print(f"checker HTTP {error.code}, retrying in {delay}s", file=sys.stderr)
+                error.close()
+                time.sleep(delay)
+                continue
+            body = error.read().decode("utf-8", "replace")
+            print(f"checker HTTP {error.code}: {body[:300]}", file=sys.stderr)
+            raise SystemExit(1) from error
+        except urllib.error.URLError as error:
+            print(f"checker unreachable: {error.reason}", file=sys.stderr)
+            raise SystemExit(1) from error
+        if status != 200:
+            print(f"checker HTTP {status}: {body[:300]}", file=sys.stderr)
+            raise SystemExit(1)
+        return json.loads(body)
+    raise SystemExit(1)
 
 
 def base() -> dict:
@@ -192,4 +233,5 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    _check_wait_seconds()
     main()
