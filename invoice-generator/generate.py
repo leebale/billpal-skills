@@ -21,6 +21,8 @@ from pypdf.generic import (  # noqa: E402
 
 GUIDELINE = "urn:cen.eu:en16931:2017"
 XRECHNUNG_GUIDELINE = "urn:cen.eu:en16931:2017#compliant#urn:xeinkauf.de:kosit:xrechnung_3.0"
+# BT-23. KoSIT rejects an XRechnung that omits it (PEPPOL-EN16931-R001).
+XRECHNUNG_BUSINESS_PROCESS = "urn:fdc:peppol.eu:2017:poacc:billing:01:1.0"
 ATTACHMENT = "factur-x.xml"
 # ISO 3166 codes, so Greece is GR here even though its VAT ids start with EL.
 EU_COUNTRIES = {
@@ -218,6 +220,7 @@ def build_xml(data: dict, check_totals: bool = True, profile: str = "facturx") -
     if profile not in {"facturx", "xrechnung"}:
         fail("profile must be facturx or xrechnung")
     guideline = GUIDELINE
+    business_process_xml = ""
     buyer_reference_xml = ""
     seller_contact_xml = ""
     seller_electronic_xml = ""
@@ -225,6 +228,11 @@ def build_xml(data: dict, check_totals: bool = True, profile: str = "facturx") -
     payment_means_xml = ""
     if profile == "xrechnung":
         guideline = XRECHNUNG_GUIDELINE
+        business_process_xml = (
+            "<ram:BusinessProcessSpecifiedDocumentContextParameter>"
+            f"<ram:ID>{XRECHNUNG_BUSINESS_PROCESS}</ram:ID>"
+            "</ram:BusinessProcessSpecifiedDocumentContextParameter>"
+        )
         buyer_reference_xml = f"<ram:BuyerReference>{xml_text(require_str(data, 'buyer_reference'))}</ram:BuyerReference>"
         seller_contact_xml = (
             "<ram:DefinedTradeContact>"
@@ -266,6 +274,7 @@ def build_xml(data: dict, check_totals: bool = True, profile: str = "facturx") -
         " xmlns:ram=\"urn:un:unece:uncefact:data:standard:ReusableAggregateBusinessInformationEntity:100\""
         " xmlns:udt=\"urn:un:unece:uncefact:data:standard:UnqualifiedDataType:100\">"
         "<rsm:ExchangedDocumentContext>"
+        f"{business_process_xml}"
         "<ram:GuidelineSpecifiedDocumentContextParameter>"
         f"<ram:ID>{guideline}</ram:ID>"
         "</ram:GuidelineSpecifiedDocumentContextParameter>"

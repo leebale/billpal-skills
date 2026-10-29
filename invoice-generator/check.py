@@ -221,6 +221,10 @@ def main() -> None:
         }
         xml_path = folder / "xrechnung.xml"
         xml_path.write_text(generate.build_xml(xrechnung, profile="xrechnung"), encoding="utf-8")
+        written = xml_path.read_text(encoding="utf-8")
+        if generate.XRECHNUNG_BUSINESS_PROCESS not in written:
+            print("xrechnung xml is missing the business process", file=sys.stderr)
+            raise SystemExit(1)
         xresult = post(xml_path, "application/xml")
         if xresult.get("accept") is True:
             print("xrechnung sample passed the live checker")

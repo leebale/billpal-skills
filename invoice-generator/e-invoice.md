@@ -16,9 +16,9 @@ This is an EN 16931 invoice, type code 380. The seller is in an EU country. No c
 Two outputs:
 
 - ZUGFeRD / Factur-X: the PDF with `factur-x.xml` embedded. Guideline `urn:cen.eu:en16931:2017`. Use this when the buyer is a business and wants a PDF they can open.
-- XRechnung: a standalone CII XML file, no PDF. Guideline `urn:cen.eu:en16931:2017#compliant#urn:xeinkauf.de:kosit:xrechnung_3.0`. Use this when the buyer is a German public body, or they asked for XRechnung or a Leitweg-ID. Do not call a ZUGFeRD PDF an XRechnung.
+- XRechnung: a standalone CII XML file, no PDF. Guideline `urn:cen.eu:en16931:2017#compliant#urn:xeinkauf.de:kosit:xrechnung_3.0`. The script sets the business process to `urn:fdc:peppol.eu:2017:poacc:billing:01:1.0`. Use this when the buyer is a German public body, or they asked for XRechnung or a Leitweg-ID. Do not call a ZUGFeRD PDF an XRechnung.
 
-A known-good XRechnung sample has not been confirmed on the live checker yet. Do not tell the user the XRechnung file was checked until `check.py` prints that the sample passed.
+Do not tell the user an XRechnung file was checked until you POSTed that file and got `accept: true`.
 
 If the seller is not in the EU, say that no e-invoice can be made yet and deliver the normal invoice. It is complete without the e-invoice.
 
