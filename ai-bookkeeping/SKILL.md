@@ -282,7 +282,7 @@ It fails, with the items to fix, when anything up to that date is:
 - a staged file never committed, or a fork;
 - missing opening balances.
 
-Missing receipts do not fail the check, but are always listed. Name them first in your summary: the accountant will ask for them. Quote `missing_receipts_count` and `missing_receipts_by_party` (payee, count, amount) from `report` or `check` as they are. Do not add the rows up again yourself. `check` lists the first 50; the report's `missing-receipts.csv` has every one (date, payee, amount, account, text, booking id).
+Missing receipts do not fail the check, but are always listed. Name them first in your summary: the accountant will ask for them. Quote `missing_receipts_count` and `missing_receipts_by_party` (payee, count, amount, and `months`: in how many months one is missing) from `report` or `check` as they are. Do not add the rows up again yourself. `check` lists the first 50; the report's `missing-receipts.csv` has every one (date, payee, amount, account, text, booking id).
 
 A month counts from the day the account was opened (the account's `date`), so an account opened mid-year needs statements from then on.
 
@@ -297,6 +297,7 @@ And it warns, without failing, about what an accountant would ask:
 - `above_asset_limit`: an expense on an equipment-like account above the country's limit for low-value assets (GWG; in the US the $2,500 de minimis safe harbor). If it lasts several years, it is an asset.
 - `contractors_1099` (US): contractors paid $2,000 or more in 2026 ($600 before) by bank transfer or check. Ask for a W-9 now; the CPA files the 1099-NEC by January 31. Card and PayPal payments are not on it.
 - `year_end_cutoff` (AT, DE, cash basis): tax office payments and recurring payments within 15 (AT) or 10 (DE) days of the turn of the year. They may count in the year they are for, not the year paid. The accountant decides; do not move them yourself.
+- `service_after_year_end` (accrual): costs or income whose service period runs past the year end, with the part after it split by days. That part is usually deferred (Rechnungsabgrenzung: prepaid expense or deferred income). Name the amounts as the script gives them; the accountant decides and books it.
 - `sales_unpaid` (cash basis, VAT on the invoice basis): sales invoices not paid yet, with the VAT the accountant adds to the return for their period.
 - `vat_payments` (AT, DE): the VAT due by that date, last year's balance included, against the payments to the tax office (`Liabilities:Tax-Office`, or a payment booked straight on a VAT account). A gap usually means a payment booked elsewhere, or costs paid from an account whose statements are missing.
 - `open_questions`: questions stored in the ledger that are still open (next section).
@@ -325,7 +326,7 @@ python3 ledger.py report <ledger> --out-dir books/reports --to 2026-03-31 --by q
 
 This writes `report.html` (one self-contained file), CSV files, and `report-data.json`:
 
-- profit and loss (on cash basis: income and expenses), by month or quarter with `--by`;
+- profit and loss (on cash basis: income and expenses), by month or quarter with `--by`, with the last period set against the one before it, and a chart of income against expenses per period at the top;
 - each income and expense account opened down to its payees and their bookings;
 - balance sheet or account balances;
 - VAT by period and treatment (a summary, not a filing), with the due date of each return in AT and DE (a Dauerfristverlängerung in DE: profile `vat_extension` `true`);
@@ -346,6 +347,18 @@ German reports (`--lang de`, the default for a German-language profile) use a se
 
 Lead your summary with the outcome: the period, whether it is ready, the result, VAT payable or refundable, and how many receipts are missing. While anything is open (unconfirmed bookings, suspense, missing statements), call the result and the VAT provisional.
 
+### What changed against the period before
+
+With `--by month` or `--by quarter`, `comparison` (in `report-data.json` and the command's output) sets the report's last period against the one before it in the same file. Per account: this period, the previous one, the change, `change_pct`, `material`, and the payees behind the change (`drivers`, the top three; the rest is `other`). Income and costs are both positive amounts. A change is material at 10 % and at least `floor` (200, or 2 % of the period's costs when that is more). The first period of the fiscal year and a period that is not complete have no comparison, and `skipped` says why: for a month, run the report to its last day.
+
+When the user asks what changed, or in a month or quarter summary, explain the material lines, largest first, and leave the rest out. For each one:
+
+- Name the driver: the payees from `drivers`, with the amounts exactly as `comparison` gives them. Never compute a change or a percentage yourself.
+- Say whether it is one-time or recurring, from that payee's bookings in earlier months. If you cannot tell, say so.
+- Mention what offsets it: a driver in the other direction on the same line, or another material line that cancels it.
+
+Do not restate the change as its reason ("materials rose because material costs went up"), do not hedge with "mainly", "some" or "various", do not blame "timing" without naming the booking that moved, and do not call `other` "various small items": give its amount as the rest.
+
 ## Handing the books to the accountant's software
 
 When the accountant wants an import file (DATEV, BMD, DVO, QuickBooks Online, Xero), read `export.md` first. With a Billpal account, the accountant may already get Billpal's own DATEV, BMD, or DVO export: give only one of the two for a period, or every cost is booked twice.
@@ -358,11 +371,14 @@ Run through this before you hand back a period, in this order:
 2. Ask what each tax office payment covered (VAT, income tax, social insurance), unless a rule already says.
 3. With a Billpal account, search for each missing receipt with `search_documents` before you call it missing: the payee, the amount, and a wider date window (two weeks either side). For a row with `fx`, search the original amount and currency. Until that search has run, say "not linked", not "missing".
 4. For anything still missing, point the user to the email address or WhatsApp number from `get_capture_setup`, so a photo or a forwarded email gets it into Billpal. Do not offer to search inboxes or portals from the chat; Billpal does that.
+   A payee missing in 3 or more `months` is a capture gap, not a one-off: fix it at the source once. If the supplier sends invoices by email, suggest forwarding them to the Billpal address. If they are only in the supplier's customer login, suggest connecting it under **Portals** in Billpal (admins and owners; `list_portals` shows what is already set up). Without a Billpal account, suggest asking the supplier to email every invoice to one address.
 5. Name the file to save.
 
 ## With a Billpal account
 
 Billpal keeps the user's invoices and receipts with their amounts, VAT, lines, and contacts. Read them through the Billpal connection instead of reading the files again.
+
+**Billpal's cards are not the books.** Billpal's own views (`show_spend`, `show_vat`, `show_overview`, `show_breakdown`, `show_month_close`) count documents by their date, without the bank rows, private shares, and derived reverse charge the ledger has. Once the user keeps books with this skill, answer profit and loss, VAT, and "what did I spend" from the ledger (`report`), never from those cards, and never show both side by side. Use Billpal's cards for the documents themselves: review questions, duplicates, subscriptions, a supplier's invoices.
 
 **Read:**
 
@@ -378,9 +394,17 @@ It writes `billpal.documents.json` (`documents/1`) and lists `notes` for what it
 - On accrual books, add `fx_rate` to a document in another currency. On cash books it is not needed when the bank rows carry the original amount. Add `terms` when the user tells you the Skonto terms. Billpal has neither.
 - Each party keeps its legal name, brand name, `country`, and `tax_id_country` (an ISO code, or `EU` for an EU OSS number, which is not a country). The commit uses them for the payee and the derived tax.
 - A document in review is never booked silently. Ask the user to resolve it in Billpal, then fetch it again.
-- Bank statements are usually not in Billpal. Take them from the user or a bank connection.
+
+**Statements in Billpal:** Billpal keeps imported bank and card statements as transactions, with the original files. The ledger still needs its own statement JSON, because only your readers check the chain and the balances.
+
+- Before you ask the user for a statement, check `list_transaction_imports` and `search_transactions` for the period and account. If it is there, download the original with `get_transaction_import_file` and run the usual reader on it (`from-camt`, `from-csv`, `from-ofx`, or read it yourself). Never ask the user to upload a statement Billpal already has.
+- For a statement that is not in Billpal yet, when the user wants it kept there too, call `upload_statement` with the file they attached, or without a file so the card shows a drop zone. Pass `account_id` only when they named the account. When the import is done, call `list_transaction_imports`. On `needs_account`, ask which account and call `set_import_account`. Then download the file as above. Never paste or retype a statement into a tool.
+- Billpal's transactions are not the ledger. Status is Unmatched, Matched, or No document. Type is Business, Private, or Transfer. The category, Note, Tags, and document matches are the user's working view in the app; your bookings stay in the ledger file. Hidden transactions are out of the user's view and out of matching; search them only with `include_hidden` when the user asks. A Bargeld transaction follows its cash-paid document and cannot be changed on its own.
+- To map your rows to Billpal transactions, use `search_transactions` for that account and period: `bank_id` when both have one, otherwise the booking date and the amount. Two rows with the same date and amount map in order; if the counts differ, do not guess, leave them unmapped.
 
 **Write back (only when the user asks for it):** after a payment is booked in the ledger and its allocation is confirmed, Billpal can mark the document as paid.
+
+When the paying row maps to a Billpal transaction, write the match instead of the payment calls: `match_transaction` with that transaction and the documents the booking settled. Billpal then shows the documents as paid from the transaction (payment source `matched_transaction`), so the `set_payment` and `set_amount_paid` calls for those documents are left out. Show the pairs first and wait for the user to confirm, as below. When a transaction already has another match in Billpal (`matched_document_ids`), show both and ask; do not unmatch on your own. Use the payment calls only for payments with no Billpal transaction:
 
 1. Get the writes from the ledger, never from your own sums: `python3 ledger.py writeback <ledger> --documents documents.json`. For each Billpal document with a booked payment it lists the Billpal calls:
    - full payment: `set_payment` with `paid` and the payment date;

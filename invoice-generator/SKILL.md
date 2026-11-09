@@ -118,7 +118,7 @@ A value the user gave you for this invoice may match an entry, for example their
 Confirm every value before it lands on the invoice.
 
 - Buyer: `get_contact` has the address. Confirm before use.
-- Seller: `company_name`, `tax_id`, and `website` only, from a party with `is_your_company` on `get_document`. Address and logo are not on the connection. `list_workspaces` returns id, name, and role only. Ask the user for the address and the logo.
+- Seller: `list_workspaces` has the workspace's `country` and `tax_id`. A party with `is_your_company` on `get_document` has `company_name`, `tax_id`, and `website`. Address and logo are not on the connection. Ask the user for them.
 - Next number: search outgoing invoices and show the last few. Results are not sorted by number. Ask which number to use. After each invoice, update the last number on the company card.
 
 ## E-invoice (optional)

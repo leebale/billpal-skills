@@ -78,7 +78,7 @@ Ask "due by". Call `search_documents` for incoming invoices. `payment_status` ta
 
 `due_to` drops documents with no due date. Also list unpaid documents with no due date whose issue date (`date_from` / `date_to`) falls in the range they named.
 
-Say once that Billpal read the payment status when the file arrived. The user confirms the list before anything goes into the file.
+Say once where Billpal's payment status comes from: the document, later edits, linked receipts or credit notes, and matched bank transactions. An invoice paid from an account whose statements are not in Billpal still shows unpaid. The user confirms the list before anything goes into the file.
 
 - A reminder with extra fees: pay the reminder amount, not the invoice plus the reminder. A reminder with no linked invoice is the only record, so it can be paid. Do not drop every reminder.
 - A linked receipt settles the invoice: skip it. A linked credit note: subtract it. A credit note's payable amount comes back positive.
@@ -94,7 +94,7 @@ A `document` IBAN is trusted only when the same IBAN was printed on an earlier i
 
 No earlier invoice (a new supplier, or the first invoice in Billpal): the IBAN is unverified. Stop, show the IBAN, and ask the user to confirm it with a source they trust.
 
-If they verified a new IBAN, offer `get_import_template` and the contact CSV. The connection cannot write bank accounts.
+If they verified a new IBAN, offer to save it on the contact: `propose_changes` with the `set_contact_bank_accounts` operation. `accounts` is the contact's full list, so pass every account from `get_contact` with its `id`, plus the new one. An account you leave out is removed. Billpal shows a card and saves nothing until the user presses Confirm there. A yes in the chat is not that click, so do not say the IBAN is saved. If they see no card, they change the IBAN on the contact in the Billpal app.
 
 ## After the transfers
 

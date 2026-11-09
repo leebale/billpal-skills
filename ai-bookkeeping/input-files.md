@@ -101,6 +101,7 @@ Also: `amount` (the tax printed on the document, when it differs from the calcul
 - `discount`: a discount on the document that its lines do not include yet (positive). `total` and tax bases are after it.
 - Line `amount_is`: `net`, `gross`, or `unknown`. Empty tax fields are `null`.
 - `url`: where the document opens (http or https only).
+- `service_from`, `service_to`: the service or delivery period (an annual policy, a subscription year). A single date gives both. `from-billpal` fills them from Billpal's billing period. On accrual books they are stored on the booking, and readiness lists periods that run past the year end.
 
 ## Journal (`journal/1`)
 

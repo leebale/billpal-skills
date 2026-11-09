@@ -1944,9 +1944,16 @@ def clearing_stuck(book: Book, through: date) -> list[str]:
     return out
 
 
-def readiness(book: Book, through: date | None, year_end: bool = False, folder: Path | None = None) -> dict:
+def tr(lang: str, en: str, de: str) -> str:
+    """Messages the report shows: German for a German report, English everywhere else (the model reads those)."""
+    return de if lang == "de" else en
+
+
+def readiness(book: Book, through: date | None, year_end: bool = False, folder: Path | None = None,
+              lang: str = "en") -> dict:
     through = book.fy_to if year_end else (through or book.fy_to)
     fails, warns = [], []
+    t_ = lambda en, de: tr(lang, en, de)
 
     def fail(code, message, items=None):
         fails.append({"code": code, "message": message, "items": (items or [])[:50], "count": len(items or [])})
@@ -1956,17 +1963,18 @@ def readiness(book: Book, through: date | None, year_end: bool = False, folder: 
 
     errs = validate(book)
     if errs:
-        fail("invalid", "The ledger has errors", errs)
+        fail("invalid", t_("The ledger has errors", "Das Hauptbuch enthält Fehler"), errs)
     scope = [t for t in book.live_txns() if t.date <= through]
     unconf = [f"{t.date} {t.payee} ({t.meta.get('txn_id')})" for t in scope
               if t.meta.get("confirmed") == "no" and not book.confirmed("booking", t.meta.get("txn_id", ""))]
     if unconf:
-        fail("unconfirmed", "Bookings the user has not confirmed", unconf)
+        fail("unconfirmed", t_("Bookings the user has not confirmed", "Buchungen, die du noch nicht bestätigt hast"), unconf)
     untax = [f"{t.date} {t.payee} ({t.meta.get('txn_id')})" for t in scope
              if any(p.meta.get("tax_confirmed") == "no" for p in t.postings)
              and not book.confirmed("tax", t.meta.get("txn_id", ""))]
     if untax:
-        fail("tax_unconfirmed", "Tax treatments the user has not confirmed", untax)
+        fail("tax_unconfirmed", t_("Tax treatments the user has not confirmed",
+                                   "Steuerliche Behandlungen, die du noch nicht bestätigt hast"), untax)
     review = {t.meta.get("document", t.meta.get("txn_id")) for t in scope if t.meta.get("document_review") == "open"
               and not book.confirmed("document_review", t.meta.get("document") or t.meta.get("txn_id", ""))}
     booked = book.documents_in_ledger()
@@ -1975,14 +1983,17 @@ def readiness(book: Book, through: date | None, year_end: bool = False, folder: 
                 and not book.confirmed("document_review", h["document"])):
             review.add(h["document"])
     if review:
-        fail("review_open", "Documents still in Billpal Review", sorted(review))
+        fail("review_open", t_("Documents still in Billpal Review", "Belege, die in Billpal noch auf „Prüfen“ stehen"),
+             sorted(review))
     for acct in book.accounts_with_role("suspense"):
         bal = book.balance(acct, through=through)
         if bal != 0:
             confirmed_open = sum((p.amount for t in scope if t.meta.get("opening") for p in t.postings
                                   if p.account == acct and p.meta.get("suspense_confirmed") == "yes"), Decimal(0))
-            note = f", {confirmed_open} of it the opening difference the user confirmed" if confirmed_open else ""
-            fail("suspense", f"{acct} holds {bal}{note}. Every amount needs a real account", [acct])
+            note = t_(f", {confirmed_open} of it the opening difference the user confirmed",
+                      f", davon {confirmed_open} die bestätigte Differenz bei den Anfangsbeständen") if confirmed_open else ""
+            fail("suspense", t_(f"{acct} holds {bal}{note}. Every amount needs a real account",
+                                f"{acct} enthält {bal}{note}. Jeder Betrag gehört auf ein richtiges Konto"), [acct])
     by_doc = {a.get("document"): aid for aid, a in book.assets.items() if a.get("document")}
 
     def asset_of(t, p):
@@ -2013,8 +2024,10 @@ def readiness(book: Book, through: date | None, year_end: bool = False, folder: 
             continue
         if booked_cost != rec:
             off.append(f"{aid}: booked {booked_cost}, the asset record says {rec}")
-    for code, message, items in (("assets_unregistered", "Fixed-asset bookings without an asset record", unreg),
-                                 ("asset_cost", "Fixed-asset bookings that do not match the asset record", off)):
+    for code, message, items in (("assets_unregistered", t_("Fixed-asset bookings without an asset record",
+                                                            "Anlagenbuchungen ohne Eintrag im Anlagenverzeichnis"), unreg),
+                                 ("asset_cost", t_("Fixed-asset bookings that do not match the asset record",
+                                                   "Anlagenbuchungen, die nicht zum Anlagenverzeichnis passen"), off)):
         if items:
             (fail if year_end else warn)(code, message, items)
     gaps = []
@@ -2028,33 +2041,39 @@ def readiness(book: Book, through: date | None, year_end: bool = False, folder: 
         if start <= end:
             gaps += [f"{acct}: {g}" for g in coverage_gaps(book, acct, start, end)]
     if gaps:
-        fail("statements_missing", "Periods without a statement", gaps)
+        fail("statements_missing", t_("Periods without a statement", "Zeiträume ohne Kontoauszug"), gaps)
     stuck = clearing_stuck(book, through)
     if stuck:
-        fail("clearing_open", f"Money in transit for more than {TRANSIT_DAYS} days: the other side of a transfer is "
-                              "missing (a statement not imported, or booked to another account)", stuck)
+        fail("clearing_open", t_(f"Money in transit for more than {TRANSIT_DAYS} days: the other side of a transfer is "
+                                 "missing (a statement not imported, or booked to another account)",
+                                 f"Geld ist seit mehr als {TRANSIT_DAYS} Tagen unterwegs: Die Gegenseite einer Umbuchung "
+                                 "fehlt (ein Auszug ist nicht importiert oder auf ein anderes Konto gebucht)"), stuck)
     if book.ledger.get("opening") == "missing" and not any(t.meta.get("opening") for t in book.txns):
-        fail("opening_missing", "Opening balances are not booked")
+        fail("opening_missing", t_("Opening balances are not booked", "Die Anfangsbestände sind nicht gebucht"))
     if book.basis == "accrual":
         _, unalloc, _ = compute_items(book, through)
         if unalloc:
-            fail("unallocated", "Payments on Personenkonten not assigned to a document",
+            fail("unallocated", t_("Payments on Personenkonten not assigned to a document",
+                                   "Zahlungen auf Personenkonten, die keinem Beleg zugeordnet sind"),
                  [f"{a}: {v}" for a, v in unalloc.items()])
     folder = folder or book.path.parent
     scan = scan_folder(folder, book.ledger_id)
     if scan["forks"]:
-        fail("fork", "Two different versions exist. Merge them before going on", scan["forks"])
+        fail("fork", t_("Two different versions exist. Merge them before going on",
+                        "Es gibt zwei verschiedene Versionen. Führe sie zusammen, bevor du weitermachst"), scan["forks"])
     if scan["pending"]:
-        fail("pending", "Staged files that were never committed", scan["pending"])
+        fail("pending", t_("Staged files that were never committed", "Vorbereitete Dateien, die nie gebucht wurden"),
+             scan["pending"])
     money = lambda t: money_amount(book, t)
     no_doc = missing_receipt_txns(book, scope)
     if no_doc:
-        warn("missing_receipts", "Bookings without a receipt or invoice",
+        warn("missing_receipts", t_("Bookings without a receipt or invoice", "Buchungen ohne Beleg"),
              [f"{t.date} {t.payee} {money(t)} ({t.meta.get('txn_id')})" for t in no_doc])
-    by_party = defaultdict(lambda: [0, Decimal(0)])
+    by_party = defaultdict(lambda: [0, Decimal(0), set()])
     for t in no_doc:
         by_party[t.payee][0] += 1
         by_party[t.payee][1] += money(t)
+        by_party[t.payee][2].add((t.date.year, t.date.month))
     booked = defaultdict(list)
     for t in scope:
         if t.meta.get("allocation"):
@@ -2067,12 +2086,14 @@ def readiness(book: Book, through: date | None, year_end: bool = False, folder: 
             alloc_gaps += [f"{aid}: {period_key(s, a['every'])}" for s, e in full_periods(lo, hi, a["every"])
                            if not any(s <= d <= e for d in booked[aid])]
     if alloc_gaps:
-        warn("allocation_missing", "Recurring costs with a period where nothing was allocated. "
-                                   "Run allocate on the private statement, or note why", alloc_gaps)
-    for code, message, items in review_flags(book, scope):
+        warn("allocation_missing", t_("Recurring costs with a period where nothing was allocated. "
+                                      "Run allocate on the private statement, or note why",
+                                      "Anteilige Kosten mit einem Zeitraum, für den nichts aufgeteilt wurde. Führe allocate "
+                                      "für den privaten Auszug aus oder halte fest, warum"), alloc_gaps)
+    for code, message, items in review_flags(book, scope, lang):
         if items:
             warn(code, message, items)
-    gap = vat_payment_gap(book, through)
+    gap = vat_payment_gap(book, through, lang)
     if gap:
         warn("vat_payments", gap)
     in_ledger = book.documents_in_ledger()
@@ -2081,50 +2102,61 @@ def readiness(book: Book, through: date | None, year_end: bool = False, folder: 
              for _, v in book.unpaid_sales.values()
              if v["document"] not in in_ledger and parse_date(v["date"], "unpaid sale date") <= through]
     if sales:
-        warn("sales_unpaid", "Sales invoices not paid yet. With VAT on the invoice basis their VAT is due for the "
-                             "invoice's period anyway: the accountant adds it to that VAT return", sales)
+        warn("sales_unpaid", t_("Sales invoices not paid yet. With VAT on the invoice basis their VAT is due for the "
+                                "invoice's period anyway: the accountant adds it to that VAT return",
+                                "Ausgangsrechnungen, die noch nicht bezahlt sind. Bei Soll-Versteuerung ist ihre USt "
+                                "trotzdem für den Zeitraum der Rechnung fällig: Dein Steuerberater nimmt sie in diese "
+                                "Voranmeldung auf"), sales)
     open_q = [f"{qn['id']}: {qn.get('question')}" for qn in book.questions.values() if not qn.get("answer")]
     if open_q:
-        warn("open_questions", "Questions for the user or the accountant that are still open", open_q)
+        warn("open_questions", t_("Questions for the user or the accountant that are still open",
+                                  "Offene Fragen an dich oder deinen Steuerberater"), open_q)
     flat = {t.meta["flat_rate"] for t in scope if t.meta.get("flat_rate")}
     both = sorted(flat & {(book.allocations.get(aid) or {}).get("topic") for aid in booked})
     if both:
-        warn("flat_rate_and_allocation", "The year has a flat rate and an allocated cost share for the same topic. "
-                                         "These are usually either/or (countries.md): ask the tax advisor", both)
+        warn("flat_rate_and_allocation", t_("The year has a flat rate and an allocated cost share for the same topic. "
+                                            "These are usually either/or (countries.md): ask the tax advisor",
+                                            "Für dasselbe Thema gibt es in diesem Jahr eine Pauschale und einen "
+                                            "aufgeteilten Kostenanteil. Meist gilt nur eines davon: Frag deinen "
+                                            "Steuerberater"), both)
     if year_end:
         todo = depreciation_plan(book)
         open_dep = [f"{r['asset']}: {r['to_book']}" for r in todo if r["to_book"] != 0]
         if open_dep:
-            fail("depreciation", "Depreciation for the year is not booked", open_dep)
+            fail("depreciation", t_("Depreciation for the year is not booked",
+                                    "Die Abschreibung für das Jahr ist nicht gebucht"), open_dep)
         if book.closed_through != book.fy_to:
-            fail("not_closed", f"Close the year first (close-period --through {book.fy_to})")
+            fail("not_closed", t_(f"Close the year first (close-period --through {book.fy_to})",
+                                  f"Schließe zuerst das Jahr ab (close-period --through {book.fy_to})"))
         try:
             result_split(book)
         except LedgerError as exc:
             fail("no_result_account", str(exc))
     return {"ready": not fails, "through": through.isoformat(), "year_end": year_end,
             "fails": fails, "warnings": warns, "missing_receipts_count": len(no_doc),
-            "missing_receipts_by_party": [{"payee": k, "count": c, "amount": a} for k, (c, a) in
+            "missing_receipts_by_party": [{"payee": k, "count": c, "amount": a, "months": len(m)} for k, (c, a, m) in
                                           sorted(by_party.items(), key=lambda kv: (-abs(kv[1][1]), kv[0]))]}
 
 
-REVIEW_CODES = {"double_charge", "price_increase", "above_asset_limit", "contractors_1099"}
 # Software is left out: subscriptions are never assets, and bought software is rare enough for the accountant.
 ASSETISH = re.compile(r"Equipment|Hardware|Computer|Office|Supplies|Materials|Tools|Furniture|Other")
 
 
-def review_flags(book: Book, scope: list) -> list[tuple[str, str, list]]:
+def review_flags(book: Book, scope: list, lang: str = "en") -> list[tuple[str, str, list]]:
     """What an accountant would ask about. Warnings only: each one can be fine."""
     cur, out, scope = book.currency, [], list(scope)
+    t_ = lambda en, de: tr(lang, en, de)
     pays = []
     for t in scope:
         money = [p for p in t.postings if book.role_of(p.account) in MONEY_ROLES]
         if not t.meta.get("opening") and t.payee and len(money) == 1 and money[0].amount < 0:
             pays.append((t, norm_text(t.payee), -money[0].amount, book.role_of(money[0].account)))
     pays.sort(key=lambda x: (x[1], x[0].date))
-    dup = [f"{a[0].date} and {b[0].date}: {a[0].payee} {a[2]}" for a, b in zip(pays, pays[1:])
+    dup = [f"{a[0].date} {t_('and', 'und')} {b[0].date}: {a[0].payee} {a[2]}" for a, b in zip(pays, pays[1:])
            if a[1] == b[1] and a[2] == b[2] and (b[0].date - a[0].date).days <= 3]
-    out.append(("double_charge", "The same payee and amount twice within three days: two purchases, or a charge to reclaim?", dup))
+    out.append(("double_charge", t_("The same payee and amount twice within three days: two purchases, or a charge to reclaim?",
+                                    "Gleicher Name und Betrag zweimal innerhalb von drei Tagen: zwei Käufe oder eine "
+                                    "Abbuchung, die du zurückfordern solltest?"), dup))
     # ponytail: a step up after two equal payments; the latest such step per payee is shown.
     by_payee = defaultdict(list)
     for t, key, amount, _ in pays:
@@ -2134,8 +2166,9 @@ def review_flags(book: Book, scope: list) -> list[tuple[str, str, list]]:
         steps = [i for i in range(2, len(xs)) if xs[i][1] > xs[i - 1][1] == xs[i - 2][1]]
         if steps:
             i = steps[-1]
-            up.append(f"{xs[i][0].payee}: {xs[i - 1][1]} to {xs[i][1]} {cur} on {xs[i][0].date}")
-    out.append(("price_increase", "A recurring payment that went up", up))
+            up.append(t_(f"{xs[i][0].payee}: {xs[i - 1][1]} to {xs[i][1]} {cur} on {xs[i][0].date}",
+                         f"{xs[i][0].payee}: von {xs[i - 1][1]} auf {xs[i][1]} {cur} am {xs[i][0].date}"))
+    out.append(("price_increase", t_("A recurring payment that went up", "Wiederkehrende Zahlungen, die teurer geworden sind"), up))
     # ponytail: the limit of the year the fiscal year starts in. In a shifted year, a new limit is
     # flagged against from the next file on; check each booking's date if that ever matters.
     limit = country_rule(book, book.fy_from.year).get("gwg_limit")
@@ -2145,8 +2178,10 @@ def review_flags(book: Book, scope: list) -> list[tuple[str, str, list]]:
                for p in t.postings if p.account.startswith("Expenses:") and ASSETISH.search(p.account) and not p.meta.get("asset")
                for base in [dec(p.meta["tax_base"]) if book.vat_regular and "tax_base" in p.meta else p.amount]
                if base > dec(limit)]
-        out.append(("above_asset_limit", f"Expenses above the {limit} {cur} limit for low-value assets: "
-                                         "equipment that lasts several years is an asset", big))
+        out.append(("above_asset_limit", t_(f"Expenses above the {limit} {cur} limit for low-value assets: "
+                                            "equipment that lasts several years is an asset",
+                                            f"Ausgaben über der GWG-Grenze von {limit} {cur}: Geräte, die mehrere Jahre "
+                                            "halten, gehören ins Anlagevermögen"), big))
     cutoff = YEAR_END_CUTOFF.get(book.profile.get("country") or "")
     if cutoff and book.basis == "cash":
         days, law = cutoff
@@ -2163,9 +2198,13 @@ def review_flags(book: Book, scope: list) -> list[tuple[str, str, list]]:
         tax_office = lambda t: any(p.account == "Liabilities:Tax-Office" or (
             book.role_of(p.account) in ("vat_in", "vat_out") and not p.meta.get("tax_part")) for p in t.postings)
         near = lambda d: (d - book.fy_from).days < days or (book.fy_to - d).days < days
-        out.append(("year_end_cutoff", f"Regular payments within {days} days of the turn of the year: they may count in the "
-                                       f"year they are for, not the year paid ({law}; for example a VAT prepayment paid in "
-                                       "January for the last year). Ask the accountant",
+        out.append(("year_end_cutoff", t_(f"Regular payments within {days} days of the turn of the year: they may count in the "
+                                          f"year they are for, not the year paid ({law}; for example a VAT prepayment paid in "
+                                          "January for the last year). Ask the accountant",
+                                          f"Regelmäßige Zahlungen innerhalb von {days} Tagen um den Jahreswechsel: Sie zählen "
+                                          f"unter Umständen zum Jahr, für das sie gelten, nicht zum Jahr der Zahlung ({law}; "
+                                          "zum Beispiel eine USt-Vorauszahlung im Januar für das Vorjahr). Frag deinen "
+                                          "Steuerberater"),
                     [f"{t.date} {t.payee} {amount}" for t, key, amount in flows
                      if near(t.date) and (len(months[key]) >= 3 or tax_office(t))]))
     if book.profile.get("country") == "US":
@@ -2185,6 +2224,29 @@ def review_flags(book: Book, scope: list) -> list[tuple[str, str, list]]:
                                         "1099-NEC candidates (ask for a W-9; card and PayPal payments are reported on 1099-K)",
                     [f"{k}: {v}" if len(years) == 1 else f"{y} {k}: {v}"
                      for (y, k), v in sorted(paid.items()) if v >= floor(y)]))
+    if book.basis == "accrual":
+        # ponytail: the part after the year end is split by days, a hint only. Whether and how much to defer
+        # (Rechnungsabgrenzung) is the accountant's call, and they book it.
+        after = []
+        for t in scope:
+            hi = opt_date(t.meta.get("service_to"))
+            if not hi or hi <= book.fy_to:
+                continue
+            lo = opt_date(t.meta.get("service_from")) or t.date
+            amount = sum((p.amount for p in t.postings if p.account.split(":")[0] in ("Expenses", "Income")), Decimal(0))
+            if not amount:
+                continue
+            share = q(amount * ((hi - max(lo, book.fy_to + timedelta(days=1))).days + 1) / ((hi - lo).days + 1), book.prec)
+            after.append(t_(f"{t.date} {t.payee} {lo} to {hi}: {'cost' if amount > 0 else 'income'} {abs(amount)} {cur}, "
+                            f"about {abs(share)} after {book.fy_to}",
+                            f"{t.date} {t.payee} {lo} bis {hi}: {'Kosten' if amount > 0 else 'Erträge'} {abs(amount)} "
+                            f"{cur}, davon etwa {abs(share)} nach dem {book.fy_to}"))
+        out.append(("service_after_year_end", t_("Costs or income for a service period that runs past the year end. The part "
+                                                 "after it is usually deferred (Rechnungsabgrenzung: prepaid expense or "
+                                                 "deferred income). Ask the accountant",
+                                                 "Kosten oder Erträge für einen Leistungszeitraum, der über das Jahresende "
+                                                 "hinausgeht. Der Teil danach wird meist abgegrenzt (aktive oder passive "
+                                                 "Rechnungsabgrenzung). Frag deinen Steuerberater"), after))
     return out
 
 
@@ -2202,7 +2264,7 @@ def period_due(book: Book, key: str, by: str) -> str | None:
     return d.isoformat()
 
 
-def vat_payment_gap(book: Book, through: date) -> str | None:
+def vat_payment_gap(book: Book, through: date, lang: str = "en") -> str | None:
     """VAT payable for the periods due by `through` against the payments to the tax office account."""
     if not book.vat_regular or not VAT_DUE.get(book.profile.get("country") or ""):
         return None
@@ -2227,8 +2289,11 @@ def vat_payment_gap(book: Book, through: date) -> str | None:
             fine.add(running)
     if paid in fine:
         return None
-    return (f"VAT due by {through} is {owed} {book.currency}, last year's balance included; payments to the tax office are "
-            f"{paid}. A gap usually means costs paid from another account are missing, or a payment is booked elsewhere")
+    return tr(lang, f"VAT due by {through} is {owed} {book.currency}, last year's balance included; payments to the tax office "
+                    f"are {paid}. A gap usually means costs paid from another account are missing, or a payment is booked elsewhere",
+              f"Bis {through} ist USt von {owed} {book.currency} fällig, einschließlich des Saldos aus dem Vorjahr. Die "
+              f"Zahlungen ans Finanzamt betragen {paid}. Eine Differenz bedeutet meist, dass Kosten von einem anderen "
+              "Konto fehlen oder eine Zahlung anders gebucht ist")
 
 
 def full_periods(lo: date, hi: date, every: str) -> list[tuple[date, date]]:
@@ -3271,6 +3336,7 @@ def from_billpal(data) -> dict:
                "party": party, "total": None if total is None else m(Decimal(str(total)) + Decimal(str(tip))),
                "discount": format(abs(Decimal(str(g["discount"]))), "f") if g.get("discount") else None,
                "taxes": taxes, "lines": lines, "linked": [], "source": "billpal", "url": g.get("app_url"),
+               "service_from": g.get("billing_period_start"), "service_to": g.get("billing_period_end"),
                "review_open": g.get("status") == "review" or bool(g.get("review_notes"))}
         for ld in g.get("linked_documents") or []:
             peer = f"billpal:{ld.get('id')}"
@@ -3286,7 +3352,7 @@ def from_billpal(data) -> dict:
 
 DOC_KEYS = {"schema", "id", "kind", "direction", "number", "date", "due_date", "tax_point", "currency", "fx_rate",
             "party", "total", "discount", "taxes", "lines", "applies_to", "linked", "review_open", "terms", "source",
-            "note", "url"}
+            "note", "url", "service_from", "service_to"}
 URL_RE = re.compile(r"https?://[^\s\"'<>]+")
 
 
@@ -3327,7 +3393,11 @@ def norm_doc(doc: dict, book: Book, need_rate: bool = True) -> dict:
         "discount": None if doc.get("discount") in (None, "") else abs(money(doc["discount"], prec, f"{where} discount")) or None,
         "party": doc.get("party") or {},
         "url": doc_url(doc.get("url"), where),
+        "service_from": opt_date(doc.get("service_from"), f"{where} service_from"),
+        "service_to": opt_date(doc.get("service_to"), f"{where} service_to"),
     }
+    if out["service_from"] and out["service_to"] and out["service_from"] > out["service_to"]:
+        raise LedgerError(f"{where}: service_from is after service_to")
     if cur != book.currency:
         if doc.get("fx_rate") in (None, ""):
             if need_rate:
@@ -3698,6 +3768,9 @@ def doc_txn(book: Book, raw: dict, dd: dict, sug: dict) -> str:
         meta["linked_documents_json"] = d["linked"]
     if d.get("url"):
         meta["document_url"] = d["url"]
+    for k in ("service_from", "service_to"):
+        if d[k]:
+            meta[k] = d[k].isoformat()
     if d["party"].get("tax_id"):
         meta["party_tax_id"] = clean_text(d["party"]["tax_id"])
     if d["currency"] != book.currency:
@@ -4464,9 +4537,69 @@ def vat_schedule(book: Book, start: date, end: date) -> dict:
     }
 
 
+# ponytail: one materiality rule for every ledger: a change of 10 % and at least max(200, 2 % of the period's
+# costs) in the ledger currency. 200 is little in JPY or HUF; scale the floor by currency if such books get noisy.
+MATERIAL_PCT, MATERIAL_SHARE, MATERIAL_MIN = Decimal("0.10"), Decimal("0.02"), Decimal(200)
+
+
+def pnl_by_payee(book: Book, a: date, b: date) -> dict:
+    """Income and costs per (account, payee) from a to b, both positive as the report shows them."""
+    out = defaultdict(Decimal)
+    for t in book.txns:
+        if a <= t.date <= b:
+            for p in t.postings:
+                root = p.account.split(":")[0]
+                if root in ("Income", "Expenses"):
+                    out[p.account, t.payee or ""] += -p.amount if root == "Income" else p.amount
+    return out
+
+
+def compare_periods(book: Book, cols: list, by: str) -> dict | None:
+    """The report's last month or quarter against the one before it in the same file, per account, with the
+    payees behind each change. Full periods only: a part of a month against a whole one says nothing."""
+    if by not in ("month", "quarter"):
+        return None
+    key, a, b = cols[-1]
+    step = 1 if by == "month" else 3
+    first = date(a.year, a.month, 1) if by == "month" else date(a.year, (a.month - 1) // 3 * 3 + 1, 1)
+    out = {"period": key, "from": a.isoformat(), "to": b.isoformat()}
+    if a != first or b != add_months(first, step) - timedelta(days=1):
+        return {**out, "skipped": f"{key} is not a full period; run the report to its last day"}
+    pa, pb = add_months(first, -step), first - timedelta(days=1)
+    if pa < book.fy_from:
+        return {**out, "skipped": f"{key} is the first period of the fiscal year; the one before is in last year's file"}
+    cur, prev = pnl_by_payee(book, a, b), pnl_by_payee(book, pa, pb)
+    costs = sum((v for (acct, _), v in cur.items() if acct.startswith("Expenses:")), Decimal(0))
+    floor = max(MATERIAL_MIN, q(costs * MATERIAL_SHARE, book.prec))
+    lines = []
+    for acct in sorted({k[0] for k in cur} | {k[0] for k in prev}):
+        moves = [(p, cur.get((acct, p), Decimal(0)), prev.get((acct, p), Decimal(0)))
+                 for p in sorted({k[1] for k in (*cur, *prev) if k[0] == acct})]
+        now, before = sum((m[1] for m in moves), Decimal(0)), sum((m[2] for m in moves), Decimal(0))
+        if not now and not before:
+            continue
+        change = now - before
+        top = sorted((m for m in moves if m[1] != m[2]), key=lambda m: -abs(m[1] - m[2]))[:3]
+        drivers = [{"payee": p, "current": c, "previous": pv, "change": c - pv} for p, c, pv in top]
+        code, name = account_label(book, acct)
+        lines.append({"account": acct, "code": code, "name": name, "group": acct.split(":")[0],
+                      "current": now, "previous": before, "change": change,
+                      "change_pct": q(change * 100 / abs(before), 1) if before else None,
+                      "material": abs(change) >= floor and (not before or abs(change) >= abs(before) * MATERIAL_PCT),
+                      "drivers": drivers, "other": change - sum((d["change"] for d in drivers), Decimal(0))})
+    lines.sort(key=lambda r: -abs(r["change"]))
+    totals = {g.lower(): {k: sum((r[k] for r in lines if r["group"] == g), Decimal(0)) for k in ("current", "previous", "change")}
+              for g in ("Income", "Expenses")}
+    totals["result"] = {k: totals["income"][k] - totals["expenses"][k] for k in ("current", "previous", "change")}
+    return {**out, "previous": period_key(pa, by), "previous_from": pa.isoformat(), "previous_to": pb.isoformat(),
+            "floor": floor, "lines": lines, "totals": totals}
+
+
 def build_report(book: Book, start: date, end: date, by: str, lang: str) -> dict:
     prec = book.prec
     cols = column_spans(start, end, by)
+    comparison = compare_periods(book, cols, by)
+    compared = {r["account"] for r in (comparison or {}).get("lines", [])}
     tb, pnl, bs = [], [], {"Assets": [], "Liabilities": [], "Equity": []}
     sums = {"debit": Decimal(0), "credit": Decimal(0)}
     period_moves = defaultdict(lambda: defaultdict(Decimal))
@@ -4493,7 +4626,7 @@ def build_report(book: Book, start: date, end: date, by: str, lang: str) -> dict
             sums["credit"] += credit
         if root in ("Income", "Expenses"):
             vals = [-(own_before(book, acct, b + timedelta(days=1)) - own_before(book, acct, a)) for _, a, b in cols]
-            if any(vals):
+            if any(vals) or acct in compared:
                 pnl.append({"account": acct, "code": code, "name": name, "group": root, "values": vals,
                             "total": sum(vals, Decimal(0))})
         elif closing:
@@ -4521,7 +4654,7 @@ def build_report(book: Book, start: date, end: date, by: str, lang: str) -> dict
     assets = [{k: v for k, v in r.items() if k != "_a"} for r in depreciation_plan(book)]
     for a in assets:
         a["to_book"] = fmt(a["to_book"], prec)
-    rep = readiness(book, min(end, book.fy_to), year_end=end >= book.fy_to)
+    rep = readiness(book, min(end, book.fy_to), year_end=end >= book.fy_to, lang=lang)
     missing = [{"date": t.date.isoformat(), "payee": t.payee, "amount": money_amount(book, t),
                 "account": ", ".join(dict.fromkeys(p.account for p in t.postings if book.role_of(p.account)
                                                    not in MONEY_ROLES | {"vat_in", "vat_out"})),
@@ -4548,14 +4681,11 @@ def build_report(book: Book, start: date, end: date, by: str, lang: str) -> dict
                  "legal_form": book.profile.get("legal_form"), "columns": [c[0] for c in cols],
                  "file": book.path.name, "version": book.version, "sha256": book.sha,
                  "ready": rep["ready"], "year_end": rep["year_end"], "precision": prec,
-                 "fails": [f"{f['code']}: {f['message']}" + (f" ({f['count']})" if f["count"] else "") for f in rep["fails"]],
-                 "warnings": [f"{w['code']}: {w['message']}" + (f" ({'; '.join(w['items'][:5])})" if w["code"] in REVIEW_CODES
-                                                                 else f" ({w['count']})" if w["count"] else "")
-                              for w in rep["warnings"] if w["code"] != "missing_receipts"],
+                 "fails": rep["fails"], "warnings": [w for w in rep["warnings"] if w["code"] != "missing_receipts"],
                  "reconciled": reconciled, "result": result, "fiscal_year_result": fy_result,
                  "missing_receipts_count": rep["missing_receipts_count"]},
         "missing_receipts_by_party": rep["missing_receipts_by_party"],
-        "trial_balance": tb, "trial_totals": sums, "pnl": pnl,
+        "trial_balance": tb, "trial_totals": sums, "pnl": pnl, "comparison": comparison,
         "balance_sheet": {**{k.lower(): v for k, v in bs.items()}, "assets_total": assets_total,
                           "liabilities_total": liab_total, "equity_total": eq_total, "result": fy_result},
         "vat": vat_schedule(book, start, end), "tax_form": tax_form(book, pnl), "open_items": open_items,
@@ -5245,9 +5375,10 @@ def run(args) -> dict:
         written = write_report(data, Path(args.out_dir), formats, delimiter, decimal, bom)
         m = data["meta"]
         return {"written": written, "out_dir": args.out_dir, "reconciled": m["reconciled"], "ready": m["ready"],
-                "fails": m["fails"], "result": m["result"], "period": [m["from"], m["to"]],
+                "fails": [f"{f['code']}: {f['message']}" for f in m["fails"]], "result": m["result"],
+                "period": [m["from"], m["to"]],
                 "missing_receipts_count": m["missing_receipts_count"],
-                "missing_receipts_by_party": data["missing_receipts_by_party"]}
+                "missing_receipts_by_party": data["missing_receipts_by_party"], "comparison": data["comparison"]}
     raise LedgerError(f"unknown command {args.cmd}")
 
 

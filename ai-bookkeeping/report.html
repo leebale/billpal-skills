@@ -14,7 +14,9 @@
     --brand: rgb(52 93 238); --brand-text: rgb(40 75 210); --tab-line: rgb(52 93 238); --focus: rgb(60 90 240);
     --neg: rgb(238 52 101);
     --dot-ok: rgb(100 201 144); --dot-warn: rgb(251 191 50); --dot-bad: rgb(239 62 109);
+    --bar-in: rgb(52 93 238); --bar-out: rgb(180 195 254);
     --shadow-xs: 0 1px 2px rgb(10 13 18 / 0.05);
+    --shadow-lg: 0 12px 16px -4px rgb(10 13 18 / 0.08), 0 4px 6px -2px rgb(10 13 18 / 0.03), 0 2px 2px -1px rgb(10 13 18 / 0.04);
     --shadow-btn: inset 0 0 0 1px rgb(10 13 18 / 0.18), inset 0 -2px 0 rgb(10 13 18 / 0.05), 0 1px 2px rgb(10 13 18 / 0.05);
     --font: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   }
@@ -25,7 +27,8 @@
       --fg: rgb(247 247 247); --fg2: rgb(206 207 210); --muted: rgb(148 151 156); --fg-dot: rgb(133 136 142);
       --brand-text: rgb(206 207 210); --tab-line: rgb(206 207 210);
       --neg: rgb(241 80 123);
-      --shadow-xs: none; --shadow-btn: none;
+      --bar-in: rgb(85 115 245); --bar-out: rgb(32 60 168);
+      --shadow-xs: none; --shadow-btn: none; --shadow-lg: none;
     }
   }
   * { box-sizing: border-box; }
@@ -64,6 +67,37 @@
   .kpi span { color: var(--muted); font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .kpi b { margin-top: auto; font-size: 24px; line-height: 32px; font-weight: 600; letter-spacing: -0.01em; font-variant-numeric: tabular-nums; white-space: nowrap; }
   .kpi b.neg { color: var(--neg); }
+  /* Income and expenses per period, like the app's MonthBars: three grid lines, the hovered period gets a soft column. */
+  .chart { padding: 20px 24px 16px; }
+  .chart-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; margin: 0 0 12px; }
+  .legend { display: flex; gap: 16px; color: var(--muted); font-size: 12px; line-height: 18px; }
+  /* Segmented control: rounded-lg bg-secondary p-0.5 ring-1 ring-secondary; the active button bg-primary shadow-xs. */
+  .seg { display: inline-flex; flex: none; padding: 2px; border-radius: 8px; background: var(--soft); box-shadow: inset 0 0 0 1px var(--line); }
+  .seg button { font: 600 12px/18px var(--font); color: var(--fg-dot); background: none; border: 0; border-radius: 6px; padding: 4px 10px; cursor: pointer; transition: color .1s linear; }
+  .seg button:hover { color: var(--muted); }
+  .seg button[aria-pressed=true] { color: var(--fg2); background: var(--card); box-shadow: inset 0 0 0 1px var(--line), var(--shadow-xs); }
+  .legend span, .tip div { display: flex; align-items: center; gap: 6px; }
+  .legend i, .tip i { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--bar-in); }
+  .legend i.out, .tip i.out { background: var(--bar-out); }
+  .plot { position: relative; height: 160px; margin-left: 56px; }
+  .gl { position: absolute; left: 0; right: 0; border-top: 1px solid var(--line); }
+  .gl span { position: absolute; right: 100%; top: -9px; padding-right: 8px; color: var(--muted); font-size: 12px; line-height: 18px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .cols { position: absolute; inset: 0; display: flex; }
+  .col { flex: 1; min-width: 0; display: flex; align-items: flex-end; justify-content: center; border-radius: 6px 6px 0 0; }
+  .col:hover, .col.on { background: var(--soft); }
+  .col:focus-visible { outline-offset: -2px; }
+  .bars { display: flex; align-items: flex-end; gap: 3px; width: 64%; max-width: 72px; height: 100%; }
+  .col b { flex: 1; border-radius: 4px 4px 0 0; background: var(--bar-in); }
+  .col b.out { background: var(--bar-out); }
+  .xl { display: flex; margin-left: 56px; }
+  .xl span { flex: 1; min-width: 0; padding-top: 8px; text-align: center; color: var(--muted); font-size: 12px; line-height: 18px; white-space: nowrap; }
+  /* ChartTooltipContent. */
+  .tip { position: absolute; top: 8px; z-index: 2; pointer-events: none; min-width: 160px; padding: 8px 12px; background: var(--card); border: 1px solid var(--line); border-radius: 8px; box-shadow: var(--shadow-lg); font-size: 12px; line-height: 18px; white-space: nowrap; }
+  .tip p { margin: 0 0 4px; color: var(--fg); font-weight: 600; }
+  .tip div { color: var(--muted); }
+  .tip div b { margin-left: auto; padding-left: 16px; color: var(--fg); font-weight: 500; font-variant-numeric: tabular-nums; }
+  .tip b.neg { color: var(--neg); }
+  .tip div.res { margin-top: 4px; padding-top: 4px; border-top: 1px solid var(--line); }
   /* Tabs type="underline" size="sm". The inset shadow is the list's 1px line; the active tab's 2px border sits on it. */
   nav { position: sticky; top: 0; z-index: 5; display: flex; gap: 12px; overflow-x: auto; scrollbar-width: none; margin: 0 0 24px; padding-top: 16px; background: var(--page); box-shadow: inset 0 -1px 0 var(--line); }
   nav::-webkit-scrollbar { display: none; }
@@ -78,10 +112,14 @@
   .head p { margin: 2px 0 0; color: var(--muted); }
   h3 { margin: 0; padding: 20px 24px 12px; font-size: 14px; line-height: 20px; font-weight: 600; }
   .head + h3 { padding-top: 0; }
-  .points { list-style: none; margin: 0; padding: 0; }
-  .points li { display: flex; gap: 12px; padding: 14px 24px; border-top: 1px solid var(--line); color: var(--fg2); }
-  .points li::before { content: ""; flex: none; width: 6px; height: 6px; margin-top: 7px; border-radius: 50%; background: var(--dot-warn); }
-  .points li.bad::before { background: var(--dot-bad); }
+  .msg { min-width: 0; color: var(--fg2); }
+  .state { display: inline-flex; align-items: center; gap: 8px; margin-left: auto; padding-left: 16px; color: var(--muted); white-space: nowrap; }
+  .state::before { content: ""; flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--dot-warn); }
+  .state.bad::before { background: var(--dot-bad); }
+  div.point { display: flex; align-items: center; padding: 14px 24px 14px 48px; border-bottom: 1px solid var(--line); }
+  .head + div.point { border-top: 1px solid var(--line); }
+  .card > div.point:last-child { border-bottom: 0; }
+  details.point > .sub { padding: 12px 24px 14px 66px; border-top: 1px solid var(--line); color: var(--fg2); }
 
   table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
   th, td { text-align: left; padding: 16px 20px; border-bottom: 1px solid var(--line); white-space: nowrap; }
@@ -153,11 +191,16 @@
     .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 20px 0; }
     .kpi { padding: 16px; gap: 4px; }
     .kpi b { font-size: 18px; line-height: 28px; }
+    .chart { padding: 16px 16px 12px; }
+    .plot, .xl { margin-left: 52px; }
+    .bars { gap: 2px; width: 76%; }
+    .xl span { font-size: 11px; }
     nav { margin: 0 -16px 20px; padding: 12px 16px 0; }
     .card { margin-bottom: 16px; scroll-margin-top: 56px; }
     .head { padding: 16px; }
     h3 { padding: 16px 16px 10px; }
-    .points li { padding: 12px 16px; }
+    div.point { padding: 12px 16px 12px 40px; }
+    details.point > .sub { padding: 12px 16px 12px 58px; }
     th, td { padding: 12px; }
     th:first-child, td:first-child { padding-left: var(--indent, 16px); }
     th:last-child, td:last-child { padding-right: 16px; }
@@ -199,12 +242,15 @@
     .kpis { grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; margin: 16px 0 24px; }
     .kpi { box-shadow: none; border-radius: 8px; padding: 10px 12px; gap: 2px; }
     .kpi b { font-size: 15px; line-height: 22px; }
+    .chart.card { border: 1px solid var(--line); border-radius: 8px; padding: 12px 16px 8px; break-inside: avoid; }
+    .plot { height: 120px; }
+    .tip, .seg { display: none; }
     .card { border: 0; border-radius: 0; overflow: visible; margin: 0 0 24px; }
     .head { padding: 0 0 8px; border-bottom: 1px solid var(--fg); break-after: avoid; }
     h2 { font-size: 14px; line-height: 20px; }
     h3 { padding: 14px 0 4px; break-after: avoid; }
     .head + h3 { padding-top: 12px; }
-    .points li { padding: 6px 0; }
+    div.point, details.point > .sub { padding: 6px 0; }
     .wrap, .wrap.more { overflow: visible; -webkit-mask-image: none; mask-image: none; }
     th, td { padding: 5px 8px; }
     th:first-child, td:first-child { padding-left: var(--indent, 0); }
@@ -250,7 +296,7 @@
   var de = m.lang === "de";
   document.documentElement.lang = de ? "de" : "en";
   var L = de ? {
-    title: "Buchhaltung", period: "Zeitraum", ready: "Bereit zur Übergabe", notReady: "Noch nicht fertig",
+    title: "Buchhaltung", period: "Zeitraum", month: "Monat", quarter: "Quartal", ready: "Bereit zur Übergabe", notReady: "Noch nicht fertig",
     desc: { drill: "Öffne ein Konto, um seine Partner und Buchungen zu sehen", bs: "Stand am ",
       items: "Rechnungen, die am {d} noch offen sind", assets: "Anschaffung und AfA je Anlage",
       missing: "Buchungen, für die noch ein Beleg fehlt", tb: "Jedes Konto vom Anfangs- bis zum Endsaldo",
@@ -265,7 +311,7 @@
     rate: "Satz", base: "Bemessung", tax: "USt", inputTax: "Vorsteuer", payable: "Zahllast", codes: "Kennzahlen",
     party: "Partner", number: "Nummer", date: "Datum", due: "Fällig", amount: "Betrag", open: "Offen", overdue: "Tage überfällig",
     receivable: "Forderung", payableSide: "Verbindlichkeit", cost: "Anschaffung", prior: "AfA bisher", thisYear: "AfA dieses Jahr",
-    booked: "Gebucht", count: "Anzahl", vatBookings: "Buchungen je Zeitraum", bookValue: "Buchwert Ende", none: "Keine Einträge", booking: "Buchung", notFiling: "Zusammenfassung, keine Steuererklärung",
+    booked: "Gebucht", count: "Anzahl", months: "Monate", change: "Veränderung", material: "Wesentliche Veränderung", vatBookings: "Buchungen je Zeitraum", bookValue: "Buchwert Ende", none: "Keine Einträge", booking: "Buchung", notFiling: "Zusammenfassung, keine Steuererklärung",
     source: "Erstellt aus", resultYear: "Ergebnis des Geschäftsjahres", taxes: "Steuern", taxType: "Steuer",
     taxGeneric: "Steuer", types: { vat: "USt", gst: "GST", sales_tax: "Sales Tax", other: "Andere" },
     drill: "Konten im Detail", bookings: "Buchungen", bookingOne: "Buchung", noParty: "Ohne Partner", text: "Text", document: "Beleg", byParty: "Nach Partner",
@@ -275,6 +321,7 @@
     search: "Buchungen", searchHint: "Partner, Text, Betrag, Konto", allAccounts: "Alle Konten",
     shown: function (n, all) { return n + " von " + all + " Buchungszeilen"; },
     more: function (n) { return "und " + n + " weitere, in journal.csv oder über die Suche"; },
+    morePoints: function (n) { return "und " + n + " weitere"; }, entries: "Einträge", entryOne: "Eintrag",
     taxForm: "Steuerformular (Entwurf)", draft: "Entwurf für die Steuerberatung, keine Steuererklärung",
     line: m.country === "AT" ? "Kennzahl" : "Zeile", unmapped: "Konten ohne Zeile, die ordnet die Steuerberatung zu",
     notDeductible: "Nicht abzugsfähig",
@@ -283,7 +330,7 @@
     allConfirmed: "Alle Buchungen", unconfirmedOnly: "Nur unbestätigte",
     madeWith: "Erstellt mit Billpal", home: "https://billpal.io/de/skills/ai-bookkeeping"
   } : {
-    title: "Books", period: "Period", ready: "Ready to hand over", notReady: "Not ready yet",
+    title: "Books", period: "Period", month: "Month", quarter: "Quarter", ready: "Ready to hand over", notReady: "Not ready yet",
     desc: { drill: "Open an account to see its parties and bookings", bs: "Balances on ",
       items: "Invoices still open on {d}", assets: "Cost and depreciation per asset",
       missing: "Bookings that still need a receipt", tb: "Every account from opening to closing balance",
@@ -298,7 +345,7 @@
     rate: "Rate", base: "Base", tax: "Output tax", inputTax: "Input tax", payable: "Payable", codes: "Report codes",
     party: "Party", number: "Number", date: "Date", due: "Due", amount: "Amount", open: "Open", overdue: "Days overdue",
     receivable: "Receivable", payableSide: "Payable", cost: "Cost", prior: "Depreciated before", thisYear: "This year",
-    booked: "Booked", count: "Count", vatBookings: "Bookings by period", bookValue: "Book value at end", none: "Nothing here", booking: "Booking", notFiling: "A summary, not a filing",
+    booked: "Booked", count: "Count", months: "Months", change: "Change", material: "Material change", vatBookings: "Bookings by period", bookValue: "Book value at end", none: "Nothing here", booking: "Booking", notFiling: "A summary, not a filing",
     source: "Built from", resultYear: "Result for the fiscal year", taxes: "Taxes", taxType: "Tax",
     taxGeneric: "Tax collected", types: { vat: "VAT", gst: "GST", sales_tax: "Sales tax", other: "Other" },
     drill: "Accounts in detail", bookings: "bookings", bookingOne: "booking", noParty: "No party", text: "Description", document: "Document", byParty: "By party",
@@ -308,6 +355,7 @@
     search: "Bookings", searchHint: "Party, text, amount, account", allAccounts: "All accounts",
     shown: function (n, all) { return n + " of " + all + " booking lines"; },
     more: function (n) { return "and " + n + " more, in journal.csv or through the search"; },
+    morePoints: function (n) { return "and " + n + " more"; }, entries: "entries", entryOne: "entry",
     taxForm: "Tax form (draft)", draft: "A draft for your accountant, not a filing",
     line: "Line", unmapped: "Accounts without a line, your accountant assigns them", notDeductible: "Not deductible",
     print: "Print", sections: "Report sections", openPoints: "What is still open",
@@ -430,7 +478,11 @@
     sectionList.push(s);
     return s;
   }
-  function plain(line) { return String(line).replace(/^[a-z0-9_]+: /, ""); }
+  // Dates and amounts inside the script's messages, in the report's format.
+  function localize(s) {
+    return String(s).replace(/\b\d{4}-\d{2}-\d{2}\b/g, function (d) { return day(d); })
+      .replace(/(^|[\s(])(-?\d+\.\d+)(?=$|[\s),;])/g, function (_, pre, n) { return pre + num(n); });
+  }
   function docCell(id, url) {
     if (!url || !/^https?:\/\//.test(url)) return id;
     return el("a", { href: url, target: "_blank", rel: "noopener noreferrer" }, id || url);
@@ -535,12 +587,36 @@
   app.appendChild(kpis);
 
   if ((m.fails && m.fails.length) || (m.warnings && m.warnings.length)) {
-    var openCard = el("div", { class: "card" }), openHead = el("div", { class: "head" }), ul = el("ul", { class: "points" });
+    var openCard = el("div", { class: "card" }), openHead = el("div", { class: "head" });
     openHead.appendChild(el("h2", null, L.openPoints)); openHead.appendChild(el("p", null, L.desc.open));
     openCard.appendChild(openHead);
-    (m.fails || []).forEach(function (f) { ul.appendChild(el("li", { class: "bad" }, plain(f))); });
-    (m.warnings || []).forEach(function (w) { ul.appendChild(el("li", null, plain(w))); });
-    openCard.appendChild(ul);
+    // A point with items opens like an account: bookings ("date name amount") as a table, anything else as lines.
+    var point = function (p, bad) {
+      var msg = el("span", { class: "msg" }, localize(p.message)), state = bad ? "state bad" : "state";
+      if (!p.items.length) {
+        var row = el("div", { class: "point" });
+        row.appendChild(msg); row.appendChild(el("span", { class: state })); openCard.appendChild(row);
+        return;
+      }
+      var rows = p.items.map(function (x) {
+        var b = /^(\d{4}-\d{2}-\d{2}) (.+) (-?\d+\.\d+)$/.exec(x);
+        return b && [day(b[1]), b[2], Number(b[3])];
+      });
+      var booked = rows.every(Boolean), d = el("details", { class: "point" }), sm = el("summary");
+      sm.appendChild(msg);
+      sm.appendChild(el("span", { class: state }, p.count + " " + (booked ? (p.count === 1 ? L.bookingOne : L.bookings) : (p.count === 1 ? L.entryOne : L.entries))));
+      d.appendChild(sm);
+      if (booked) d.appendChild(table([L.date, L.party, L.amount], rows, [false, false, true]));
+      else {
+        var sub = el("div", { class: "sub" });
+        p.items.forEach(function (x) { sub.appendChild(el("div", null, localize(x))); });
+        d.appendChild(sub);
+      }
+      if (p.count > p.items.length) d.appendChild(el("p", { class: "empty" }, L.morePoints(p.count - p.items.length)));
+      openCard.appendChild(d);
+    };
+    (m.fails || []).forEach(function (f) { point(f, true); });
+    (m.warnings || []).forEach(function (w) { point(w); });
     app.appendChild(openCard);
   }
   app.appendChild(nav);
@@ -559,6 +635,123 @@
       return -sum((byAcct[r.account] || []).filter(function (j) { return periodOf(j.date, "quarter") === qk; }), function (j) { return j.amount; });
     });
   }
+  // Income against expenses by month or quarter, summed from the bookings (like the quarter columns above), so both
+  // work whatever --by the report was run with. Hover, focus or a tap shows the amounts.
+  var incAcct = {}, expAcct = {};
+  income.forEach(function (r) { incAcct[r.account] = true; });
+  expenses.forEach(function (r) { expAcct[r.account] = true; });
+  function series(by) {
+    var keys = [];
+    for (var dm = new Date(m.from.slice(0, 7) + "-01T00:00:00Z"); dm.toISOString().slice(0, 10) <= m.to; dm.setUTCMonth(dm.getUTCMonth() + 1)) {
+      var k = periodOf(dm.toISOString().slice(0, 10), by);
+      if (keys.indexOf(k) < 0) keys.push(k);
+    }
+    var inc = keys.map(function () { return 0; }), exp = keys.map(function () { return 0; });
+    data.journal.forEach(function (j) {
+      var i = keys.indexOf(periodOf(j.date, by));
+      if (i < 0) return;
+      if (incAcct[j.account]) inc[i] -= Number(j.amount); else if (expAcct[j.account]) exp[i] += Number(j.amount);
+    });
+    return { keys: keys, inc: inc, exp: exp };
+  }
+  var views = { month: series("month"), quarter: series("quarter") };
+  var byList = ["month", "quarter"].filter(function (b) {
+    var v = views[b];
+    return v.keys.length > 1 && Math.max.apply(null, v.inc.concat(v.exp)) > 0;
+  });
+  if (byList.length) {
+    var nf1 = new Intl.NumberFormat(locale, { maximumFractionDigits: 1 });
+    var compact = function (v) { return v < 1000 ? String(Math.round(v)) : nf1.format(v / 1000) + (de ? "\u00a0Tsd." : "K"); };
+    var MON_DE = ["Jan", "Feb", "Mär", "Apr", "Mai", "Jun", "Jul", "Aug", "Sep", "Okt", "Nov", "Dez"];
+    // "2026-03" and "2026-Q1" become ["Mar", "2026"] and ["Q1", "2026"].
+    var label = function (k) {
+      var mo = /^(\d{4})-(\d{2})$/.exec(k), qu = /^(\d{4})-(Q\d)$/.exec(k);
+      return mo ? [(de ? MON_DE : MON)[Number(mo[2]) - 1], mo[1]] : qu ? [qu[2], qu[1]] : [k, ""];
+    };
+    var chart = el("div", { class: "card chart", role: "group", "aria-label": L.income + ", " + L.expenses });
+    var chartHead = el("div", { class: "chart-head" }), legend = el("div", { class: "legend", "aria-hidden": "true" });
+    [[L.income, null], [L.expenses, { class: "out" }]].forEach(function (x) {
+      var sp = el("span"); sp.appendChild(el("i", x[1])); sp.appendChild(document.createTextNode(x[0])); legend.appendChild(sp);
+    });
+    chartHead.appendChild(legend);
+    var chartBody = el("div");
+    // Segmented control like the app's Month / Quarter / Year; one button per granularity that has more than one period.
+    var seg = el("div", { class: "seg", role: "group", "aria-label": L.period }), segButtons = {};
+    if (byList.length > 1) {
+      byList.forEach(function (b) {
+        var btn = el("button", { type: "button", "aria-pressed": "false" }, L[b]);
+        btn.addEventListener("click", function () { draw(b); });
+        segButtons[b] = btn; seg.appendChild(btn);
+      });
+      chartHead.appendChild(seg);
+    }
+    chart.appendChild(chartHead); chart.appendChild(chartBody);
+    app.insertBefore(chart, kpis.nextSibling);
+    var draw = function (by) {
+      for (var b in segButtons) segButtons[b].setAttribute("aria-pressed", String(b === by));
+      var cols = views[by].keys, inP = views[by].inc, outP = views[by].exp;
+      var top = Math.max.apply(null, inP.concat(outP));
+      var step = Math.pow(10, Math.floor(Math.log10(top / 2))), f = top / 2 / step;
+      step *= f <= 1 ? 1 : f <= 2 ? 2 : f <= 2.5 ? 2.5 : f <= 5 ? 5 : 10;
+      top = step * 2;
+      var plot = el("div", { class: "plot" }), colsBox = el("div", { class: "cols" }), xl = el("div", { class: "xl", "aria-hidden": "true" });
+      var tip = el("div", { class: "tip", "aria-hidden": "true", hidden: "" }), shown = null;
+      [top, step, 0].forEach(function (v) {
+        var g = el("div", { class: "gl", style: "top:" + (100 - v / top * 100) + "%" });
+        g.appendChild(el("span", null, compact(v))); plot.appendChild(g);
+      });
+      var hide = function () { if (shown) shown.classList.remove("on"); shown = null; tip.hidden = true; };
+      var show = function (i, c) {
+        hide(); shown = c; c.classList.add("on");
+        tip.replaceChildren(el("p", null, label(cols[i]).join(" ").trim()));
+        [[L.income, inP[i], ""], [L.expenses, outP[i], "out"], [L.result, inP[i] - outP[i], "res"]].forEach(function (x) {
+          var row = el("div", x[2] === "res" ? { class: "res" } : null);
+          if (x[2] !== "res") row.appendChild(el("i", x[2] ? { class: x[2] } : null));
+          row.appendChild(el("span", null, x[0])); row.appendChild(amount("b", x[1])); tip.appendChild(row);
+        });
+        tip.hidden = false;
+        // Beside the period, on the side with more room. Where neither side fits (a phone), centred above the taller bar,
+        // over the legend if it must: it may cover a neighbour's bars, never the period it describes.
+        var w = tip.offsetWidth, W = plot.clientWidth, l = c.offsetLeft, r = W - l - c.offsetWidth, x, y = 8;
+        if (Math.max(l, r) >= w + 4) x = r >= l ? l + c.offsetWidth + 4 : l - 4 - w;
+        else {
+          x = l + c.offsetWidth / 2 - w / 2;
+          y = Math.max(-40, Math.min(8, plot.clientHeight * (1 - Math.max(inP[i], outP[i], 0) / top) - 4 - tip.offsetHeight));
+        }
+        tip.style.left = Math.max(-40, Math.min(x, W - w)) + "px";
+        tip.style.top = y + "px";
+      };
+      cols.forEach(function (k, i) {
+        var c = el("div", { class: "col", tabindex: "0", role: "img",
+          "aria-label": label(k).join(" ").trim() + ": " + L.income + " " + num(inP[i]) + ", " + L.expenses + " " + num(outP[i]) });
+        var bars = el("span", { class: "bars" });
+        [inP[i], outP[i]].forEach(function (v, j) {
+          var h = Math.max(v > 0 ? 1 : 0, Math.max(0, v) / top * 100);
+          bars.appendChild(el("b", j ? { class: "out", style: "height:" + h + "%" } : { style: "height:" + h + "%" }));
+        });
+        c.appendChild(bars);
+        c.addEventListener("mouseenter", function () { show(i, c); });
+        c.addEventListener("focus", function () { show(i, c); });
+        c.addEventListener("click", function () { show(i, c); });
+        c.addEventListener("mouseleave", hide);
+        c.addEventListener("blur", hide);
+        colsBox.appendChild(c); xl.appendChild(el("span", null, label(k)[0]));
+      });
+      plot.appendChild(colsBox); plot.appendChild(tip);
+      chartBody.replaceChildren(plot, xl);
+    };
+    draw(byList[0]);
+  }
+  // The last period against the one before (data.comparison): amounts are positive for income and costs alike,
+  // and a material change shows its percentage below.
+  var cmp = data.comparison && !data.comparison.skipped ? data.comparison : null, cmpBy = {};
+  if (cmp) cmp.lines.forEach(function (l) { cmpBy[l.account] = l; });
+  function changeCell(l) {
+    if (!l) return 0;
+    if (!l.material) return Number(l.change);
+    var pct = l.change_pct == null ? "" : (Number(l.change_pct) > 0 ? "+" : "") + Number(l.change_pct).toLocaleString(locale) + " %";
+    return { v: Number(l.change), sub: pct || L.material, title: L.material };
+  }
   // On a phone the period columns are hidden (class "p"): account and total fit without scrolling.
   var s = section("pnl", cash ? L.pnlCash : L.pnl, de ? L.income + " und " + L.expenses + " je Konto" : L.income + " and " + L.expenses.toLowerCase() + " per account");
   [[L.income, income, 1], [L.expenses, expenses, -1]].forEach(function (g) {
@@ -566,12 +759,13 @@
     var periods = cols.length > 1 ? cols : [];
     var rows = g[1].map(function (r) {
       var v = periods.length ? values(r).map(function (x) { return g[2] * Number(x); }) : [];
-      return [acct(r.code, r.name)].concat(v).concat([g[2] * Number(r.total)]);
+      var l = cmpBy[r.account], extra = cmp ? [l ? Number(l.previous) : 0, changeCell(l)] : [];
+      return [acct(r.code, r.name)].concat(v).concat([g[2] * Number(r.total)]).concat(extra);
     });
-    var head = [L.account].concat(periods).concat([L.total]);
-    var numeric = [false].concat(periods.map(function () { return true; })).concat([true]);
-    var cls = [""].concat(periods.map(function () { return "p"; })).concat([""]);
-    var tot = [L.total].concat(numeric.slice(1).map(function (_, i) { return sum(rows, function (r) { return r[i + 1]; }); }));
+    var head = [L.account].concat(periods).concat([L.total]).concat(cmp ? [cmp.previous, L.change] : []);
+    var numeric = [false].concat(periods.map(function () { return true; })).concat([true]).concat(cmp ? [true, true] : []);
+    var cls = [""].concat(periods.map(function () { return "p"; })).concat([""]).concat(cmp ? ["p", ""] : []);
+    var tot = [L.total].concat(numeric.slice(1).map(function (_, i) { return sum(rows, function (r) { return cellValue(r[i + 1]); }); }));
     s.appendChild(table(head, rows, numeric, tot, cls));
   });
 
@@ -662,9 +856,9 @@
   if (m.missing_receipts_count) {
     s = section("missing", L.missing, L.desc.missing, L.missingShort);
     s.appendChild(el("h3", null, L.byParty));
-    s.appendChild(table([L.party, L.count, L.amount], data.missing_receipts_by_party.map(function (r) {
-      return [r.payee, String(r.count), r.amount];
-    }), [false, "right", true]));
+    s.appendChild(table([L.party, L.count, L.months, L.amount], data.missing_receipts_by_party.map(function (r) {
+      return [r.payee, String(r.count), String(r.months), r.amount];
+    }), [false, "right", "right", true]));
     s.appendChild(el("h3", null, L.firstBookings));
     s.appendChild(table([L.date, L.party, L.text, L.account, L.amount], data.missing_receipts.map(function (r) {
       return [day(r.date), r.payee, r.narration, acctName(r.account), r.amount];

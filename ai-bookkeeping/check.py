@@ -951,6 +951,24 @@ def book_d(tmp: Path) -> None:
          "party": {"name": "Cloud Inc", "country": "US"}}]})["documents"][0]
     assert sd["suggested"]["derived_tax"]["rate"] == "19" and sd["document"]["lines"][0]["tax"]["regime"] == "reverse_charge", sd
 
+    # a service period past the year end is flagged with its share by days; one ending on 31 December is not
+    mueller = {"name": "Müller", "personenkonto": "70001"}
+    period = lambda i, start, end: {"id": f"billpal:{i}", "kind": "invoice", "direction": "in", "number": i, "date": start,
+                                    "party": mueller, "total": "1190.00", "service_from": start, "service_to": end,
+                                    "lines": [{"amount": "1000.00", "amount_is": "net", "account_code": "4985", "tax": vat19}]}
+    raises("service_from is after service_to", ledger.norm_doc, period("bad", "2026-07-01", "2026-06-30"), b)
+    out = ok("stage-documents", v, put(f / "period.json", {"schema": "documents/1", "documents": [
+        period("ins", "2026-07-01", "2027-06-30"), period("h2", "2026-07-01", "2026-12-31")]}))
+    ok("commit-documents", v, out["pending"], "--decisions", put(f / "period.dec.json", {"accept_suggested": True}))
+    v = latest(f, "d")
+    w = next(w for w in ledger.readiness(ledger.Book.load(v), ledger.parse_date("2026-07-31"))["warnings"]
+             if w["code"] == "service_after_year_end")
+    assert w["items"] == ["2026-07-01 Müller 2026-07-01 to 2027-06-30: cost 1000.00 EUR, about 495.89 after 2026-12-31"], w
+    # a German report gets German messages
+    de = ledger.build_report(ledger.Book.load(v), ledger.date(2026, 1, 1), ledger.date(2026, 7, 31), "none", "de")
+    w = next(w for w in de["meta"]["warnings"] if w["code"] == "service_after_year_end")
+    assert "Rechnungsabgrenzung" in w["message"] and "Kosten 1000.00 EUR, davon etwa 495.89 nach dem 2026-12-31" in w["items"][0], w
+
     # malformed input comes back as JSON errors, never a traceback
     for args in (("bogus",), ("stage", v), ("stage", v, f / "missing.json")):
         assert not cli(*args)["ok"], args
@@ -979,6 +997,7 @@ def billpal_doc(**kw) -> dict:
             "payment_due_date": None, "currency": "EUR", "total_amount": None, "net_amount": None, "tip_amount": None,
             "tax_amount": None, "discount": None, "reverse_charge": False, "tax_lines": [], "line_items": [],
             "supplier": None, "customer": None, "bank_accounts": {"supplier": [], "customer": []},
+            "billing_period_start": None, "billing_period_end": None,
             "linked_documents": [], "review_notes": [], **kw}
 
 
@@ -1322,7 +1341,8 @@ def book_f(tmp: Path) -> None:
     out = ok("report", latest(f, "f"), "--out-dir", f / "rep", "--to", "2026-02-28")
     # missing receipts per clean payee, over every row and not only the 50 listed
     assert out["missing_receipts_count"] == 3 and out["missing_receipts_by_party"] == [
-        {"payee": "Cursor", "count": 2, "amount": "-178.28"}, {"payee": "Spar", "count": 1, "amount": "-5.00"}], out
+        {"payee": "Cursor", "count": 2, "amount": "-178.28", "months": 1},
+        {"payee": "Spar", "count": 1, "amount": "-5.00", "months": 1}], out
     data = json.loads((f / "rep" / "report-data.json").read_text())
     assert [(m["date"], m["payee"], m["amount"], m["account"]) for m in data["missing_receipts"]] == [
         ("2026-02-02", "Cursor", "-89.14", "Expenses:Software"), ("2026-02-03", "Cursor", "-89.14", "Expenses:Software"),
@@ -1420,12 +1440,15 @@ def book_h(tmp: Path) -> None:
     bp = ledger.from_billpal({"documents": [
         billpal_doc(id="ex-1", status="excluded", total_amount=9.0, supplier=aws),
         billpal_doc(id="rc-0", total_amount=100.0, net_amount=100.0, reverse_charge=True, supplier=aws, app_url="https://x.io/d/rc-0",
-                    tax_lines=rc0(100.0), line_items=[billpal_line(100.0, 0)]),
+                    tax_lines=rc0(100.0), line_items=[billpal_line(100.0, 0)],
+                    billing_period_start="2026-02-01", billing_period_end="2027-01-31"),
         billpal_doc(id="rc-flag", total_amount=50.0, net_amount=50.0, reverse_charge=True, supplier=aws),
         billpal_doc(id="rc-out", direction="outgoing", total_amount=200.0, net_amount=200.0, customer=aws,
                     tax_lines=rc0(200.0))]})
     assert [d["id"] for d in bp["documents"]] == ["billpal:rc-0", "billpal:rc-flag", "billpal:rc-out"], bp["documents"]
     assert bp["documents"][0]["url"] == "https://x.io/d/rc-0" and "url" not in bp["documents"][1]
+    assert (bp["documents"][0]["service_from"], bp["documents"][0]["service_to"]) == ("2026-02-01", "2027-01-31")
+    assert "service_from" not in bp["documents"][1]
     assert any(n.startswith("billpal:ex-1: excluded in Billpal (AWS") for n in bp["notes"]), bp["notes"]
     nd = {d["id"]: ledger.norm_doc(d, b, need_rate=False) for d in bp["documents"]}
     want = {"type": "vat", "regime": "reverse_charge", "rate": "20", "source": "derived", "confirmed": False}
@@ -1930,6 +1953,12 @@ def book_l(tmp: Path) -> None:
     assert ledger.period_due(b, "2026-Q1", "quarter") == "2026-05-11"
     fails("a new question needs the question", "journal", latest(f, "l"), put(f / "q.json", {
         "schema": "journal/1", "questions": [{"id": "new", "answer": "x"}]}))
+    # missing receipts count the months they fall in, so a payee missing every month stands out
+    ok("journal", latest(f, "l"), put(f / "phone.json", {"schema": "journal/1", "entries": [
+        {**entry(d, "-29.90", "Expenses:Software", "Vodafone"), "no_document": None}
+        for d in ("2026-05-03", "2026-06-03", "2026-06-20", "2026-07-03")]}))
+    by_party = ledger.readiness(ledger.Book.load(latest(f, "l")), None)["missing_receipts_by_party"]
+    assert by_party == [{"payee": "Vodafone", "count": 4, "amount": D("-119.60"), "months": 3}], by_party
 
     # cash basis: a cost document in the statement's span that no bank row pays
     doc = {"id": "billpal:unpaid", "kind": "invoice", "direction": "in", "date": "2026-05-03", "total": "49.00",
@@ -2059,6 +2088,59 @@ def book_n(tmp: Path) -> None:
     print("book N (DE cash basis, VAT on the invoice basis, unpaid sales, VAT rates): ok")
 
 
+def book_o(tmp: Path) -> None:
+    """October against September: the change per account, which changes are material, and the payees behind them."""
+    f = tmp / "o"
+    f.mkdir()
+    ok("init", put(f / "init.json", {
+        "schema": "init/1", "title": "Bridge LLC", "file_label": "o", "chart": "qbo", "new_business": True,
+        "ledger": {"fiscal_year_from": "2026-01-01", "fiscal_year_to": "2026-12-31", "currency": "USD"},
+        "profile": {"country": "US", "legal_form": "LLC", "company": True, "basis": "cash", "vat_status": "none",
+                    "chart": "qbo", "language": "en"}}), "--out-dir", f)
+    e = lambda d, account, payee, amount: {
+        "date": d, "payee": payee, "confirmed": "user", "user_said": "yes", "no_document": "test",
+        "lines": [{"account": "Assets:Bank:Checking", "amount": amount if account.startswith("Income") else "-" + amount},
+                  {"account": account}]}
+    sep = [("Income:Sales", "Client A", "30000.00"), ("Income:Sales", "Client B", "12000.00"),
+           ("Income:Other", "Grant", "1800.00"), ("Expenses:Materials", "Supplier X", "17200.00"),
+           ("Expenses:Vehicle", "Shell", "1000.00"), ("Expenses:Other", "Misc", "190.00"), ("Expenses:Rent", "Landlord", "500.00")]
+    oct_ = [("Income:Sales", "Client A", "30000.00"), ("Income:Sales", "Client B", "9000.00"), ("Income:Sales", "Client C", "7400.00"),
+            ("Income:Other", "Grant", "2620.00"), ("Expenses:Materials", "Supplier X", "16000.00"),
+            ("Expenses:Materials", "Supplier Y", "2640.00"), ("Expenses:Materials", "Supplier Z", "1000.00"),
+            ("Expenses:Materials", "Supplier W", "200.00"), ("Expenses:Vehicle", "Shell", "1120.00"), ("Expenses:Other", "Misc", "1000.00")]
+    ok("journal", f / "o-v1.beancount", put(f / "j.json", {"schema": "journal/1", "entries":
+        [e("2026-09-10", *x) for x in sep] + [e("2026-10-10", *x) for x in oct_]}))
+    b = ledger.Book.load(latest(f, "o"))
+    rep = ledger.build_report(b, ledger.date(2026, 9, 1), ledger.date(2026, 10, 31), "month", "en")
+    c = rep["comparison"]
+    # October costs are 21,960, so a change counts from 439.20 (2 %) and 10 %
+    assert (c["period"], c["previous"], c["floor"]) == ("2026-10", "2026-09", D("439.20")), c
+    rows = {r["account"]: r for r in c["lines"]}
+    for r in c["lines"]:
+        assert r["previous"] + r["change"] == r["current"], r
+        assert sum((d["change"] for d in r["drivers"]), D(0)) + r["other"] == r["change"], r
+    sales, mat = rows["Income:Sales"], rows["Expenses:Materials"]
+    assert (sales["change"], sales["change_pct"], sales["material"]) == (D("4400.00"), D("10.5"), True), sales
+    assert [(d["payee"], d["change"]) for d in sales["drivers"]] == [("Client C", D("7400.00")), ("Client B", D("-3000.00"))]
+    assert (mat["change"], mat["change_pct"], mat["material"], mat["other"]) == (D("2640.00"), D("15.3"), True, D("200.00")), mat
+    assert [d["payee"] for d in mat["drivers"]] == ["Supplier Y", "Supplier X", "Supplier Z"], mat["drivers"]
+    assert (rows["Expenses:Vehicle"]["change"], rows["Expenses:Vehicle"]["material"]) == (D("120.00"), False)
+    assert (rows["Expenses:Other"]["change_pct"], rows["Expenses:Other"]["material"]) == (D("426.3"), True)
+    assert (rows["Expenses:Rent"]["current"], rows["Expenses:Rent"]["material"]) == (D(0), True)
+    assert c["totals"]["result"]["change"] == D("2150.00"), c["totals"]
+    # rent was only paid in September, so its row stays in the October P&L to carry the comparison
+    oct_only = ledger.build_report(b, ledger.date(2026, 10, 1), ledger.date(2026, 10, 31), "month", "en")
+    assert any(r["account"] == "Expenses:Rent" and not r["total"] for r in oct_only["pnl"]), oct_only["pnl"]
+    assert oct_only["comparison"]["lines"] == c["lines"]
+    skipped = lambda a, z, by="month": ledger.build_report(b, a, z, by, "en")["comparison"]
+    assert "not a full period" in skipped(ledger.date(2026, 10, 1), ledger.date(2026, 10, 20))["skipped"]
+    assert "first period" in skipped(ledger.date(2026, 1, 1), ledger.date(2026, 3, 31), "quarter")["skipped"]
+    assert skipped(ledger.date(2026, 9, 1), ledger.date(2026, 10, 31), "none") is None
+    out = ok("report", latest(f, "o"), "--from", "2026-10-01", "--to", "2026-10-31", "--by", "month", "--out-dir", f / "rep")
+    assert out["comparison"]["previous"] == "2026-09" and "report.html" in out["written"]
+    print("book O (period comparison): ok")
+
+
 def main() -> int:
     unit()
     with tempfile.TemporaryDirectory() as td:
@@ -2077,6 +2159,7 @@ def main() -> int:
         book_l(tmp)
         book_m(tmp)
         book_n(tmp)
+        book_o(tmp)
         performance(tmp)
         written = sorted({p for p in tmp.rglob("*.beancount")})
         WRITTEN.extend(written)
