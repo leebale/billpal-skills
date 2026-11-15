@@ -2,19 +2,31 @@
 
 [![skills.sh](https://skills.sh/b/leebale/billpal-skills)](https://skills.sh/leebale/billpal-skills)
 
-Free skills for Claude and ChatGPT. Each skill runs on its own. A Billpal account makes some of them easier, because the assistant can read invoices and contacts the user already has. Without an account, the user supplies the same details in the chat.
+Free skills for invoices, SEPA payments, and bookkeeping. They work in Claude, ChatGPT, Claude Code, Codex, Cursor, and other agents. Each skill runs on its own. A Billpal account makes some of them easier, because the agent can read the invoices and contacts you already have. Without an account, you give the same details in the chat.
 
-- [Invoice generator](invoice-generator/): writes an invoice in a Billpal template, your own file, or a plain default. Optionally turns it into a ZUGFeRD / Factur-X e-invoice for sellers in the EU, checked by Billpal; that step needs code execution turned on. [Download ZIP](https://github.com/leebale/billpal-skills/releases/latest/download/invoice-generator.zip)
-- [SEPA file generator](sepa-file-generator/): builds one SEPA credit-transfer file (pain.001.001.09) for upload to business online banking. Needs code execution turned on. [Download ZIP](https://github.com/leebale/billpal-skills/releases/latest/download/sepa-file-generator.zip)
-- [Delivery-invoice match](delivery-invoice-match/): checks invoices against delivery notes, timesheets, and purchase orders, and lists what was billed but not delivered, price differences, duplicates, and open orders. Documents can come from the chat, a local folder, Billpal, or another connection such as an ERP. Needs code execution turned on for more than a few documents. [Download ZIP](https://github.com/leebale/billpal-skills/releases/latest/download/delivery-invoice-match.zip)
-- [AI bookkeeping](ai-bookkeeping/): keeps double-entry books in Beancount, one file per fiscal year, from bank statements (CAMT, CSV, MT940, OFX, PDF), bank connections, the cash book, and invoices and receipts. Books VAT, open items, and depreciation, and checks every period before calling it ready for your accountant. Charts of accounts for Austria, Germany, and the US, or your own, and import files for DATEV, BMD, DVO, QuickBooks Online, and Xero. Your books are a plain-text file you keep: Billpal holds the documents, never the ledger. Works with a Billpal account, linking each booking to its document, and without one. Needs code execution turned on. [Download ZIP](https://github.com/leebale/billpal-skills/releases/latest/download/ai-bookkeeping.zip)
+- [Invoice generator](invoice-generator/): writes an invoice in a Billpal template, your own file, or a plain default. Optionally turns it into a ZUGFeRD / Factur-X e-invoice for sellers in the EU, checked by Billpal. [Download ZIP](https://github.com/leebale/billpal-skills/releases/latest/download/invoice-generator.zip)
+- [SEPA file generator](sepa-file-generator/): builds one SEPA credit-transfer file (pain.001.001.09) for upload to business online banking. [Download ZIP](https://github.com/leebale/billpal-skills/releases/latest/download/sepa-file-generator.zip)
+- [Delivery-invoice match](delivery-invoice-match/): checks invoices against delivery notes, timesheets, and purchase orders, and lists what was billed but not delivered, price differences, duplicates, and open orders. Documents can come from the chat, a local folder, Billpal, or another connection such as an ERP. [Download ZIP](https://github.com/leebale/billpal-skills/releases/latest/download/delivery-invoice-match.zip)
+- [AI bookkeeping](ai-bookkeeping/): keeps double-entry books in Beancount from bank statements, the cash book, and invoices and receipts, with VAT, open items, and depreciation. Charts of accounts for Austria, Germany, and the US, and import files for DATEV, BMD, DVO, QuickBooks Online, and Xero. Your books are a plain-text file you keep. [Step-by-step guide](https://help.billpal.io/en/ai-bookkeeping-skill), [Download ZIP](https://github.com/leebale/billpal-skills/releases/latest/download/ai-bookkeeping.zip)
 
-To use a skill:
+## Install
 
-- **Claude:** turn on code execution under Settings, Capabilities. Then open Customize, Skills, select +, Create skill, Upload a skill, and choose the ZIP.
-- **ChatGPT:** open Plugins in the sidebar, then the Skills tab. Select Create, then Upload from your computer, and choose the ZIP.
-- **Claude Code, Codex, Cursor, and other coding agents:** run `npx skills add leebale/billpal-skills` and pick the skills. For one skill: `npx skills add leebale/billpal-skills --skill ai-bookkeeping`. The [skills CLI](https://skills.sh) copies the whole folder, scripts included.
+**Claude Code, Codex, Cursor, and other coding agents:**
 
-A link to this repository in a chat is not enough: neither assistant installs a skill from a link. Step-by-step guide: https://help.billpal.io/en/ai-bookkeeping-skill
+```bash
+npx skills add leebale/billpal-skills
+```
 
-Billpal: https://billpal.io
+The [skills CLI](https://skills.sh) asks which skills to install and copies each folder with its scripts. For one skill, add `--skill ai-bookkeeping`.
+
+**Claude:** turn on code execution under Settings, Capabilities. Then open Customize, Skills, select +, Create skill, Upload a skill, and choose the ZIP.
+
+**ChatGPT:** open Plugins in the sidebar, then the Skills tab. Select Create, then Upload from your computer, and choose the ZIP.
+
+In Claude and ChatGPT, upload the ZIP. A link to this repository in a chat is not enough. The SEPA file generator and AI bookkeeping need code execution. So do the e-invoice step and delivery matches with more than a few documents.
+
+## License
+
+MIT for Billpal's own files. Vendored third-party files keep their own license: see [NOTICE](NOTICE).
+
+Billpal collects invoices and receipts from email, WhatsApp, and supplier portals, and exports them for your accountant: https://billpal.io
