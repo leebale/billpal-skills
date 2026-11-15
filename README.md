@@ -1,5 +1,7 @@
 # Billpal skills
 
+[![skills.sh](https://skills.sh/b/leebale/billpal-skills)](https://skills.sh/leebale/billpal-skills)
+
 Free skills for Claude and ChatGPT. Each skill runs on its own. A Billpal account makes some of them easier, because the assistant can read invoices and contacts the user already has. Without an account, the user supplies the same details in the chat.
 
 - [Invoice generator](invoice-generator/): writes an invoice in a Billpal template, your own file, or a plain default. Optionally turns it into a ZUGFeRD / Factur-X e-invoice for sellers in the EU, checked by Billpal; that step needs code execution turned on. [Download ZIP](https://github.com/leebale/billpal-skills/releases/latest/download/invoice-generator.zip)
@@ -11,6 +13,7 @@ To use a skill:
 
 - **Claude:** turn on code execution under Settings, Capabilities. Then open Customize, Skills, select +, Create skill, Upload a skill, and choose the ZIP.
 - **ChatGPT:** open Plugins in the sidebar, then the Skills tab. Select Create, then Upload from your computer, and choose the ZIP.
+- **Claude Code, Codex, Cursor, and other coding agents:** run `npx skills add leebale/billpal-skills` and pick the skills. For one skill: `npx skills add leebale/billpal-skills --skill ai-bookkeeping`. The [skills CLI](https://skills.sh) copies the whole folder, scripts included.
 
 A link to this repository in a chat is not enough: neither assistant installs a skill from a link. Step-by-step guide: https://help.billpal.io/en/ai-bookkeeping-skill
 
