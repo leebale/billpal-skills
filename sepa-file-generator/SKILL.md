@@ -1,11 +1,16 @@
 ---
 name: sepa-file-generator
 description: >
-  Build one ISO pain.001.001.09 SEPA credit-transfer file (SEPA-Datei,
-  Sammelüberweisung) for upload to business online banking. The generator
-  runs with Node and needs this skill's files in the code sandbox. With
-  only a link, ask the user to upload the skill ZIP. The model does not
-  write the XML itself.
+  Build one SEPA bulk transfer file (pain.001.001.09 XML, SEPA-Datei,
+  Sammelüberweisung) to pay several suppliers or invoices at once through
+  business online banking, for example in Austria or Germany. Checks IBANs
+  and amounts, converts special characters, shows a preview, and validates
+  the file against the ISO 20022 schema. Use when the user wants to pay
+  invoices in one batch, create a SEPA XML or payment file, or says
+  "SEPA-Datei erstellen", "Sammelüberweisung", or "pain.001". The generator
+  runs with Node and needs this skill's files in the code sandbox. With only
+  a link, ask the user to upload the skill ZIP. The model does not write the
+  XML itself, and the skill never moves money.
 ---
 
 # SEPA file generator

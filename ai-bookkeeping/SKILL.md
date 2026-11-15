@@ -1,18 +1,20 @@
 ---
 name: ai-bookkeeping
 description: >
-  Keep a small business's books as a double-entry Beancount ledger, one file
-  per fiscal year: bank statements (CAMT, CSV, MT940, PDF), a bank
-  connection, a cash book, and invoices and receipts, with VAT, open items,
-  assets and depreciation, and reports for the accountant. Use when the
-  user wants to do their bookkeeping, book bank statements, keep an
-  Einnahmen-Ausgaben-Rechnung or EÜR, prepare the UVA or UStVA, or says
-  "Buchhaltung machen", "Kontoauszug verbuchen", "Belege zuordnen",
-  "KI-Buchhaltung", "für den Steuerberater vorbereiten", or "Beancount".
-  Also for US small businesses: "do my books", "categorize my bank
-  transactions", "get my books ready for my CPA", "Schedule C", "sales
-  tax", "1099s", QuickBooks or Xero alternative, Chase, Wells Fargo or
-  Bank of America downloads (CSV, OFX, QFX). Needs code execution.
+  Bookkeeping and accounting for small businesses, freelancers, and sole
+  traders: double-entry books in Beancount. Imports bank and card statements
+  (CSV, CAMT, MT940, OFX, QFX, PDF), categorizes transactions to a chart of
+  accounts (SKR03, SKR04, ÖKR, QuickBooks-style, or the accountant's own),
+  reconciles each statement to the bank balance, matches invoices and
+  receipts, and lists missing receipts. Books VAT and US sales tax, open
+  items, and depreciation. Reports P&L, balance sheet, and a draft Schedule
+  C, and exports for DATEV, BMD, DVO, QuickBooks Online, and Xero. Use when
+  the user wants to do the books, categorize or reconcile bank transactions,
+  close the month or year, prepare the VAT return, get the books ready for
+  the accountant or CPA, or wants a QuickBooks or Xero alternative, or says
+  "Buchhaltung machen", "KI-Buchhaltung", "Kontoauszug verbuchen", "Belege
+  zuordnen", "EÜR", "UStVA", "UVA", "für den Steuerberater", or "Beancount".
+  Needs code execution. The books stay a plain-text file the user keeps.
 ---
 
 # AI bookkeeping

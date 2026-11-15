@@ -1,11 +1,16 @@
 ---
 name: invoice-generator
 description: >
-  Write an invoice as a PDF or an editable file, optionally as a ZUGFeRD /
-  Factur-X e-invoice. Use when the user wants to create an invoice, write an
-  invoice, make an e-invoice, or says "Rechnung schreiben", "Rechnung
-  erstellen", or "E-Rechnung". Fills a Billpal template, the user's own file,
-  or a plain default.
+  Create a professional invoice for freelancers and small businesses as a
+  PDF, Word, or Excel file: from one of 12 Billpal invoice templates, the
+  user's own template, or a plain default. Gets the required details right:
+  VAT ids, tax rates, reverse charge, the small-business exemption
+  (Kleinunternehmer), currency, language, and the next invoice number.
+  Optionally adds EN 16931 e-invoice data as ZUGFeRD / Factur-X or a
+  standalone XRechnung, checked by Billpal. Use when the user wants to
+  create or write an invoice, needs an invoice template, bills a client, or
+  says "Rechnung schreiben", "Rechnung erstellen", "E-Rechnung",
+  "XRechnung", "ZUGFeRD", or "Factur-X".
 ---
 
 # Invoice generator

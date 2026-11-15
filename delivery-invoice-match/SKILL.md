@@ -1,12 +1,17 @@
 ---
 name: delivery-invoice-match
 description: >
-  Check invoices against delivery notes, timesheets, and purchase orders
-  (three-way match). Use when the user wants to match delivery notes to
-  invoices, check that what was billed was delivered, reconcile timesheets
-  with invoices, or says "Lieferscheine prüfen", "Lieferschein mit Rechnung
-  abgleichen", "bon de livraison", or "three-way match". Works with files in
-  the chat, a local folder, Billpal, or another connection such as an ERP.
+  Three-way match for accounts payable: check supplier invoices against
+  delivery notes, timesheets, and purchase orders. Lists what was billed but
+  not delivered, quantity and price differences, duplicate invoices, and
+  what is still open on an order, with amounts. Use when the user wants to
+  check invoices before paying them, match delivery notes or timesheets to
+  invoices, match invoices to POs, find double billing or overcharges, or
+  says "three-way match", "invoice verification", "Lieferscheine prüfen",
+  "Lieferschein mit Rechnung abgleichen", "Rechnungsprüfung", or "bon de
+  livraison". Works with files in the chat, a local folder, Billpal, or
+  another connection such as an ERP. Reports only: it never pays or blocks a
+  payment.
 ---
 
 # Delivery-invoice match
