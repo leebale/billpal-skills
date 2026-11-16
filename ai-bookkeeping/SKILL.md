@@ -19,11 +19,17 @@ description: >
 
 # AI bookkeeping
 
+Bookkeeping for small businesses and freelancers, done by your AI agent. Give it your bank statements, invoices, and receipts. It books every transaction to the right account with VAT or sales tax, checks every statement against the bank balance, and lists missing receipts. You get a report and import files for your accountant: DATEV, BMD, DVO, QuickBooks Online, or Xero.
+
+Your books are a Beancount file: plain text that you keep, one file per fiscal year. Billpal never stores it. Works with or without a Billpal account. Needs code execution (Python).
+
+## Instructions for the agent
+
 Keep the user's books. Every booking goes through `ledger.py`, which checks it and writes a new version of the ledger. You classify and explain. The user confirms. The script owns every number. Answer in the user's language.
 
-The promise is: "Your books, ready for your accountant" (in German: „fertig für deinen Steuerberater“). Say "ready" only for a period where `check --ready` passes. Before that, say what is still open.
+The promise is: "Your books, ready for your accountant." Say "ready" only for a period where `check --ready` passes. Before that, say what is still open.
 
-This skill does not file anything, does not pay anything, and does not replace an accountant. It keeps the books they work from. In German, the accountant is the Steuerberater; in the US, usually the CPA or an enrolled agent. Use the user's word.
+This skill does not file anything, does not pay anything, and does not replace an accountant. It keeps the books they work from. Call the accountant what the user calls them (see "Appendix: words").
 
 ## Before you start
 
@@ -310,7 +316,7 @@ Name each one once in your summary. None of them blocks "ready".
 
 A question you cannot settle in this session, for the user later or for the accountant, goes into the ledger, so the next session and the accountant see it. Store it with `journal`: `"questions": [{"id": "apple-0201", "question": "Is the 1,785.00 Apple payment a laptop?", "proposal": "An asset over 36 months", "evidence": "Bank row 2026-02-01"}]`. To answer it, store the same `id` with `answer`. `status` lists the open ones: read them at the start of every session, and ask them when they fit.
 
-When the check passes, say "ready for your accountant" (in German: „fertig für deinen Steuerberater“) for that period, and give them the report and the newest ledger file.
+When the check passes, say "ready for your accountant" for that period, and give them the report and the newest ledger file.
 
 ## Year end and the next year
 

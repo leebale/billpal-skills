@@ -16,6 +16,12 @@ description: >
 
 # Delivery-invoice match
 
+Check supplier invoices before you pay them. Give the agent your invoices with the delivery notes, timesheets, or purchase orders. It lists what was billed but not delivered, quantity and price differences, duplicate invoices, and what is still open on an order, with amounts.
+
+Documents can come from the chat, a folder, Billpal, or another connection such as an ERP. More than a few documents need code execution.
+
+## Instructions for the agent
+
 Check that each invoice bills what was delivered or performed, and, when the order is there too, at the agreed price. Answer in the user's language.
 
 This skill reports. It never pays, blocks a payment, or changes a document in Billpal or any other system. It does not decide who is right. It shows what differs and by how much.

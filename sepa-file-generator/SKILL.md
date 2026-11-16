@@ -15,6 +15,12 @@ description: >
 
 # SEPA file generator
 
+Pay many suppliers with one bank upload. List the transfers, and the agent builds a SEPA bulk transfer file (pain.001 XML). You upload it to your business online banking and approve the payments there. The file is checked against the ISO 20022 schema before you get it. The skill never moves money.
+
+Works with banks that import SEPA XML files, for example business banks in Austria and Germany. Needs code execution (Node.js).
+
+## Instructions for the agent
+
 Build one ISO `pain.001.001.09` file. Answer in the user's language.
 
 Do not ask the user to pick a dialect. Business banks in Austria and Germany that import a SEPA XML file take this standard. If the user says their bank has no XML import (N26 and Wise do not), say that and stop. Do not build a per-bank CSV.

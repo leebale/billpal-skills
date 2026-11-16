@@ -15,6 +15,12 @@ description: >
 
 # Invoice generator
 
+Create an invoice you can send, as a PDF, Word, or Excel file. Pick one of 12 Billpal templates, use your own template, or get a plain default. The agent asks for what an invoice must contain, such as VAT ids, tax rates, reverse charge, or the small-business exemption, and checks it before it writes the file. For sellers in the EU, it can add e-invoice data (ZUGFeRD / Factur-X or XRechnung), checked by Billpal.
+
+Works with or without a Billpal account. The e-invoice step needs code execution.
+
+## Instructions for the agent
+
 Write one invoice the user can send. Answer in the user's language.
 
 This skill is a folder: this file, `sample-denylist.json`, `e-invoice.md`, `generate.py`, and `vendor/`. If you only have a link to this file, try once to get the folder: download https://github.com/leebale/billpal-skills/releases/latest/download/invoice-generator.zip, or `git clone https://github.com/leebale/billpal-skills`. If that fails, ask the user to attach that ZIP in your first message, not halfway through the invoice.
